@@ -822,6 +822,62 @@ def _inventory_text(ctx: ToolContext) -> str:
 
 
 @tool(
+    "set_diet",
+    "Record the household's dietary restriction. It persists and governs every suggestion.",
+    _params({"diet": {"type": "string", "enum": ["none", "halal", "vegetarian", "vegan"]}}, ["diet"]),
+)
+def set_diet(ctx: ToolContext, diet: Any = None) -> Tuple[str, Optional[str]]:
+    try:
+        d = ctx.store.set_diet(_str(diet, "diet", required=True) or "")
+    except ValueError as e:
+        raise ToolError(str(e))
+    return "meals", f"diet set to {d}"
+
+
+@tool(
+    "suggest_meals",
+    "What can I cook? Returns every stored recipe with how many of its ingredients are in the "
+    "pantry, which are missing, and how many portions it makes. Use it to recommend a set of "
+    "recipes; say what to buy only when it is one or two easy items.",
+    _params({
+        "meals": {"type": "integer", "description": "how many portions the cook wants in total"},
+        "scale": {"type": "number", "description": "batch multiplier for every recipe, default 1"},
+    }),
+)
+def suggest_meals(ctx: ToolContext, meals: Any = None, scale: Any = None) -> Tuple[str, Optional[str]]:
+    n = _int(meals, "meals")
+    factor = _float(scale, "scale") or 1.0
+    if factor <= 0:
+        raise ToolError("scale must be positive")
+    ctx.meal_options = (n, factor)  # type: ignore[attr-defined]
+    return "meals", None
+
+
+@tool(
+    "shopping_list",
+    "What to buy for a chosen set of recipes, after subtracting what is already in the pantry.",
+    _params({
+        "recipe_ids": {"type": "array", "items": {"type": "string"}},
+        "scale": {"type": "number"},
+    }, ["recipe_ids"]),
+)
+def shopping_list_tool(ctx: ToolContext, recipe_ids: Any = None, scale: Any = None) -> Tuple[str, Optional[str]]:
+    refs = _list(recipe_ids, "recipe_ids")
+    if not refs:
+        raise ToolError("'recipe_ids' is required")
+    recipes = []
+    for ref in refs:
+        r = ctx.store.find_recipe(str(ref))
+        if r is None:
+            known = ", ".join(f"{x.id} ({x.title})" for x in ctx.store.list_recipes())
+            raise ToolError(f"no stored recipe '{ref}'. Available: {known}")
+        recipes.append(r)
+    factor = _float(scale, "scale") or 1.0
+    ctx.shopping_for = (recipes, factor)  # type: ignore[attr-defined]
+    return "shopping", None
+
+
+@tool(
     "check_stock",
     "Check whether ingredients are in the pantry inventory.",
     _params({"items": {"type": "array", "items": {"type": "string"}}}, ["items"]),
@@ -884,6 +940,16 @@ def render_domain(ctx: ToolContext, domain: str) -> str:
         return _recipe_state(ctx, r) if r else render_progress(s)
     if domain == "inventory":
         return _inventory_text(ctx)
+    if domain == "meals":
+        from cooking_assistant_ai.core.mealplan import render_meal_options
+
+        wanted, factor = getattr(ctx, "meal_options", (None, 1.0))
+        return render_meal_options(ctx.store, wanted, factor)
+    if domain == "shopping":
+        from cooking_assistant_ai.core.mealplan import render_shopping_list
+
+        recipes, factor = getattr(ctx, "shopping_for", ([], 1.0))
+        return render_shopping_list(ctx.store, recipes, factor)
     if domain == "catalog":
         lines = ["RECIPES IN STORAGE"]
         for r in ctx.store.list_recipes():

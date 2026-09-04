@@ -9,7 +9,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
 
-from cooking_assistant_ai.core.claims import Claim, correction_prompt, unjustified_claims
+from cooking_assistant_ai.core.claims import (
+    Claim,
+    correction_prompt,
+    missed_state_change,
+    omission_prompt,
+    unjustified_claims,
+)
 from cooking_assistant_ai.core.clock import Clock
 from cooking_assistant_ai.core.context import assemble_context
 from cooking_assistant_ai.core.fmt import fmt_time
@@ -190,7 +196,7 @@ class Orchestrator:
     def __init__(self, session: Session, llm: LLM, store: Store, output: OutputSink,
                  clock: Optional[Clock] = None, idle_interval_s: float = 60.0,
                  max_tool_rounds: int = 8, push_state: bool = True, batch_grace_s: float = 0.25,
-                 max_corrections: int = 1, empty_retries: int = 1):
+                 max_corrections: int = 1, empty_retries: int = 1, max_omission_nudges: int = 1):
         self.session = session
         self.llm = llm
         self.output = output
@@ -204,6 +210,7 @@ class Orchestrator:
         self.batch_grace_s = batch_grace_s
         self.max_corrections = max_corrections
         self.empty_retries = empty_retries
+        self.max_omission_nudges = max_omission_nudges
         self._timer_tasks: Dict[str, asyncio.Task] = {}
         self._run_task: Optional[asyncio.Task] = None
         self._idle_task: Optional[asyncio.Task] = None
@@ -417,9 +424,10 @@ class Orchestrator:
     async def _generate(self, prompt: str, proactive: bool, now: datetime) -> "SpeechGate":
         """One full attempt: context, tool rounds, claim correction. Returns its SpeechGate."""
         session = self.session
-        messages = assemble_context(session, prompt, now)
+        messages = assemble_context(session, prompt, now, store=self.ctx.store)
         gate = SpeechGate(session, self.output, stream=not proactive)
         corrections_left = self.max_corrections
+        omissions_left = self.max_omission_nudges
         for _round in range(self.max_tool_rounds + 1):
             raw = ""
             fed = 0
@@ -462,6 +470,18 @@ class Orchestrator:
                     await self.output(StateChanged(self.state()))
                 await gate.release()
                 continue
+
+            # The cook said the kitchen moved on and nothing was recorded: nudge once, so
+            # the plan cannot silently drift from reality. The model decides what to do.
+            if (not proactive and omissions_left > 0 and _round < self.max_tool_rounds
+                    and not gate.dispatched):
+                missed = missed_state_change(prompt, gate.tools_ok)
+                if missed is not None:
+                    omissions_left -= 1
+                    await self.output(Notice("state may have drifted: " + missed.describe(), level="warning"))
+                    messages.append({"role": "assistant", "content": text})
+                    messages.append({"role": "user", "content": omission_prompt(missed)})
+                    continue
 
             # Final text for this turn: anything still held is an unbacked claim.
             await gate.release()

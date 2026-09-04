@@ -5,6 +5,7 @@ from typing import List
 
 import pytest
 
+from cooking_assistant_ai.core.tools import dispatch
 from cooking_assistant_ai.llm.client import Chunk, ScriptedLLM, ToolCallRequest, call, say
 from cooking_assistant_ai.llm.llm_orchestrator import (
     Notice,
@@ -274,6 +275,61 @@ def test_control_markup_stripping():
     assert strip_control_markup("a<|im_end|>b") == "ab"
     assert strip_control_markup("<think>x</think>done") == "xdone"
     assert strip_control_markup("normal text, 5 < 6 > 4") == "normal text, 5 < 6 > 4"
+
+
+async def test_unrecorded_progress_is_nudged_not_forced(orch):
+    """The exact drift seen in a real session: the cook says the chicken went in the oven
+    and the turn ends with no state change."""
+    o, llm, out = orch
+    llm.push(
+        "Great, it'll take about 25 minutes.",                       # says nothing to the state
+        call("start_task", task_id="chicken roast"),                  # after the nudge
+        "Chicken's roasting, 25 minutes.",
+    )
+    dispatch(o.ctx, "add_task", {"label": "chicken roast", "recipe_id": "r001",
+                                 "step_ids": ["r001-s5"], "appliance": "oven", "temp_f": 425})
+    await o.submit("the chicken is seared and it's going in the oven now"); await o.wait_idle()
+    nudge = llm.calls[1][-1]["content"]
+    assert nudge.startswith("[SYSTEM] That turn changed nothing in the state")
+    assert o.session.find_task("chicken roast").status == "active"
+    assert any("state may have drifted" in e.text for e in out.events if isinstance(e, Notice))
+
+
+async def test_no_nudge_when_the_cook_only_asked_a_question(orch):
+    o, llm, out = orch
+    llm.push("About twenty minutes.")
+    await o.submit("how long left on the chicken"); await o.wait_idle()
+    assert len(llm.calls) == 1
+    assert not any("drifted" in e.text for e in out.events if isinstance(e, Notice))
+
+
+async def test_no_nudge_when_the_model_already_recorded_it(orch):
+    o, llm, out = orch
+    llm.push(call("mark_complete", step_ids=["r002-s1"]), "Rice rinsed, noted.")
+    await o.submit("I've rinsed the rice"); await o.wait_idle()
+    assert len(llm.calls) == 2  # tool round then reply, no nudge round
+    assert not any("drifted" in e.text for e in out.events if isinstance(e, Notice))
+
+
+def test_drift_warnings_surface_contradictions(session, clock):
+    from datetime import timedelta
+
+    from cooking_assistant_ai.core.scheduler import drift_warnings
+    from cooking_assistant_ai.core.tools import ToolContext, dispatch
+    from cooking_assistant_ai.storage.db import Store
+
+    ctx = ToolContext(session, clock, Store(":memory:"))
+    dispatch(ctx, "add_task", {"label": "chicken roast", "recipe_id": "r001",
+                               "step_ids": ["r001-s5"], "appliance": "oven", "temp_f": 425})
+    dispatch(ctx, "set_timer", {"label": "chicken roasting", "duration_s": 1500,
+                                "task_id": "chicken roast"})
+    warnings = drift_warnings(session, clock.now())
+    assert any("still pending" in w and "start_task" in w for w in warnings)
+    dispatch(ctx, "start_task", {"task_id": "chicken roast"})
+    assert drift_warnings(session, clock.now()) == []
+    # an active task long past its window is also worth asking about
+    clock.advance(1500 + 6 * 60)
+    assert any("due to finish" in w for w in drift_warnings(session, clock.now()))
 
 
 def test_sentence_splitter_streams_early():

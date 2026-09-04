@@ -7,6 +7,32 @@ from structured state on every turn.
 
 Design spec: [cooking-assistant-api-spec(1).md](cooking-assistant-api-spec(1).md).
 
+## Which model to use
+
+Two configurations, both already the defaults. Everything else in this file is the evidence
+behind them.
+
+| | Command | Model | Planning | Messy | Speed | Cost |
+|---|---|---|---|---|---|---|
+| **Best experience** | `-Cloud`, `COOK_OPENROUTER_MODEL=google/gemini-3.8-flash` | Gemini 3.8 Flash | 5/5 | 8/8 | 6 s | ~25c a meal |
+| **Best value** | `.\start.ps1 -Cloud` | `google/gemma-4-31b-it` | 6/6 | 8/8 | 9 s | ~3c a meal |
+| **Offline or no spend** | `.\start.ps1` | `kitchen:gemma-q8` | 21/21 | — | 23 s | free, 13 GB VRAM |
+
+Gemini 3.8 Flash needs `COOK_OPENROUTER_REASONING=low`; it refuses `off` entirely
+("Reasoning is mandatory for this endpoint").
+
+`-Cloud` runs the cloud model with the local one as automatic fallback, so a dropped
+connection mid-meal degrades instead of ending dinner. Pick the local default if you would
+rather not spend or need it to work with the internet down.
+
+Two rules that fall out of the testing, and matter more than the choice above:
+
+1. **Never run a reasoning model here without pinning the effort.** GLM and every
+   qwen3.5/3.6/3.7 reason by default and spend minutes per turn, because reasoning tokens are
+   re-spent on each of the 5 to 9 tool rounds. Set `COOK_OPENROUTER_REASONING=off`.
+2. **Raise the quantization before reaching for a bigger model.** The same gemma4:12b went
+   from 4/9 at q4 to 21/21 at q8. That single change beat every larger model tried.
+
 ## Layout
 
 ```
@@ -18,6 +44,8 @@ src/cooking_assistant_ai/
     context.py     system prompt + per-turn context assembly
     tools.py       tool registry, universal {ok,state,message|reason} envelope
     clock.py       injectable clock (tests and the --sim REPL move time)
+    mealplan.py    pantry matching, meal suggestions, shopping lists
+    diet.py        halal / vegetarian / vegan ingredient rules
   storage/    SQLite for recipes + inventory, with seed data
   llm/
     client.py           OllamaLLM (streaming + tools) and ScriptedLLM (tests)
@@ -26,7 +54,8 @@ src/cooking_assistant_ai/
   api/app.py  HTTP + WebSocket transport, serves the tablet app
   web/        tablet kiosk app (index.html, app.js, app.css)
   cli.py      terminal REPL (Phase 1 without a model, Phase 2 with one)
-tests/        72 tests, no model needed (plus an opt-in speech round trip)
+evals/        plan_bench.py (planning) and messy_bench.py (recovery), both need a live model
+tests/        112 tests, no model needed (plus an opt-in speech round trip)
 ```
 
 ## Run
@@ -91,9 +120,10 @@ vocabulary hints. faster-whisper settings: `COOK_WHISPER_MODEL`, `COOK_WHISPER_D
 `src/cooking_assistant_ai/web/` is served at `http://<server>:8000/` (plain HTML, CSS and
 JS, no build step). Open it in a kiosk browser on the tablet.
 
-- **Recipes screen** (where a fresh session starts): tick every recipe you're cooking,
-  set "Eat in N min" or a clock time, tap "Start cooking". The server loads the whole
-  selection, sets plating, and hands the model one planning turn: it builds all the tasks,
+- **Recipes screen** (where a fresh session starts): set the diet, tick every recipe you're
+  cooking and tap "Start cooking". Recipes the diet forbids are dimmed and cannot be ticked.
+  There is no serving deadline unless you tick "serving at a set time". The
+  server loads the whole selection and hands the model one planning turn: it builds all the tasks,
   then briefs you out loud from a code-computed summary (how long, when to start, which
   appliances and burners, what to prep first, the ingredients to get out) and names the first
   thing to do. Adding a recipe later re-runs the same flow and only extends the plan. Import
@@ -176,6 +206,47 @@ requests, and `:free` slugs are capped at 20 requests per minute and 50 per day 
 purchased credits, on top of the upstream provider's own limiting. Tested with
 `google/gemma-4-31b-it:free`: isolated calls work (1.4 s, tool call parsed correctly), but a
 planning turn is throttled to failure. The paid slug has no such problem.
+
+**Cloud models on the same benchmark.** Cost per meal is computed from published rates and
+the measured 280K input / 10K output of a heavy meal, not from OpenRouter's usage counter,
+which lags by minutes and under-reports right after a run:
+
+| Model | Clean | Median turn | $/M in-out | Est. per meal |
+|---|---|---|---|---|
+| `google/gemma-4-31b-it` | 6/6 | 9 s | 0.09 / 0.34 | $0.029 |
+| `qwen/qwen3-235b-a22b-2507` | 5/5 | 19 s | 0.087 / 0.35 | $0.028 |
+| `moonshotai/kimi-k2-0905` | 5/5 | 9 s | 0.60 / 2.50 | $0.18 |
+| `meta-llama/llama-4-maverick` | 4/5 | 10 s | 0.20 / 0.70 | $0.063 |
+| `openai/gpt-4.1-mini` | 1/5 | 44 s | 0.40 / 1.60 | $0.128 |
+| `qwen/qwen3.6-plus` | 5/5 | 14 s | 0.325 / 1.95 | $0.111 |
+| `qwen/qwen3.6-27b` (same model as local) | 5/5 | 35 s | 0.30 / 2.00 | $0.104 |
+| `qwen/qwen3.7-flash` | 2/5 | 8 s | 0.03 / 0.13 | $0.010 |
+| `z-ai/glm-5.3-flash`, reasoning low | 3/4 | 13 s | 0.075 / 0.25 | $0.024 |
+| `z-ai/glm-5.3-flash`, reasoning on | 2/2 | 313 s | 0.075 / 0.25 | ~$0.10 |
+
+The qwen family is reliable at every size tested (`qwen3.6-27b`, `qwen3.6-plus` and
+`qwen3-235b` all scored 5/5), which matches its 21/21 locally, but it is priced three to four
+times higher per token than gemma and is slower. Two results are worth remembering: the
+*same* model, `qwen3.6-27b`, is slower through the cloud (35 s) than on this machine (19 s),
+so there is no speed argument for hosting it remotely, only a VRAM one. And the newest,
+cheapest qwen, `qwen3.7-flash`, was among the least reliable at 2/5, so newer is not better.
+
+Every qwen3.5/3.6/3.7 and GLM model reasons by default. Set `COOK_OPENROUTER_REASONING=off`
+(sent as `reasoning: {enabled: false}`, the cloud equivalent of Ollama's `think=false`) or
+they spend minutes per turn. On `qwen3.6-27b` that one setting is 19 s versus 1.9 s for a
+single request.
+
+`gemma-4-31b` wins on the combination: it ties kimi-k2 on quality and speed at a sixth of
+the price, and ties qwen3-235b on price while being twice as fast. `qwen3-235b-a22b-2507` is
+the pick if you would rather have a 235B mixture-of-experts and can accept 19 s.
+`gpt-4.1-mini` was the surprise, scoring 1/5 and taking 44 s, and is not recommended here.
+
+GLM 5.3 Flash plans well and is cheaper per token ($0.075/$0.25 against $0.09/$0.34), but its
+reasoning is a liability here: left on it produced flawless plans at four to seven minutes a
+turn, because reasoning tokens are re-spent on every one of the 5 to 9 tool rounds. Dialled
+down it is fast but no more reliable than gemma. This is the same trap gpt-oss fell into, and
+the rule generalises: **for this multi-round tool loop, prefer a non-reasoning model, or set
+the effort explicitly.**
 
 **Measured on the paid `google/gemma-4-31b-it`**, same benchmark as the local models:
 
@@ -261,7 +332,7 @@ The assistant shares one GPU with the Windows desktop, so it is tuned not to fil
   The smaller models produce syntactically valid calls and semantically wrong plans: rice
   chained after the chicken is served, a circular set of `after` references, a whole recipe
   given a 32-second duration, or a recipe left unplanned. Reproduce with
-  `scratchpad/plan_bench.py <model> <trials>` before switching. `--model qwen-kitchen:14b`
+  `evals/plan_bench.py <model> <trials>` before switching. `--model qwen-kitchen:14b`
   remains available when headroom beats plan quality.
 
   Llama has nothing in the useful range: 3.1 is 8B (too weak, the 9B tier scored 0/1) or
@@ -281,6 +352,46 @@ The assistant shares one GPU with the Windows desktop, so it is tuned not to fil
 Measure what is actually resident with `ollama ps`, and per process with
 `Get-Counter "\GPU Process Memory(*)\Local Usage"`.
 
+## The two benchmarks
+
+`evals/plan_bench.py <model> <trials>` scores building a plan. `evals/messy_bench.py <model>`
+scores what happens when cooking goes wrong: eating 25 minutes earlier, the chicken needing
+longer, running out of butter, skipping a step, "how much longer on that one?" with two timers
+running, the cook claiming the rice is done when it never started, dropping the garlic, and a
+guest turning out vegetarian. Each scenario starts from the same deterministically-built state
+and is scored on an objective consequence: state that must change, or a reply that must ask
+instead of guess.
+
+**Both benchmarks now saturate.** Gemma and Gemini each score 8/8 on the messy set, so the
+numbers can no longer separate good models, and the difference shows up only in *how* they
+pass. On "I dropped half the garlic", gemma asked whether there was enough left; Gemini called
+`check_stock`, found six cloves in the pantry and offered to smash two more. On the chicken
+running long, gemma set a timer; Gemini cancelled the old timer, set a new one, moved the task
+and pushed plating. Both pass. One is an assistant, the other is a prompt that answers.
+
+If you extend the evals, add scenarios that a merely-adequate model would fail, not more of
+the ones everything passes.
+
+## Keeping state honest without taking over
+
+Three guardrails sit between the model and the state. All of them *check or surface*; none
+of them decides what happens in the kitchen, which stays the model's job.
+
+- **Claim checking** catches the model saying it did something it did not do.
+- **Omission nudging** is the mirror: the cook says the kitchen moved on ("it's going in the
+  oven now", "I've rinsed the rice") and the turn ends with no state change. The orchestrator
+  sends one `[SYSTEM]` nudge inviting the model to record it *or ask the cook what they meant*.
+  It never calls the tool itself, and questions ("how long left?", "is the rice covered?") are
+  never treated as progress reports.
+- **Drift warnings** surface contradictions as questions in the timeline the model reads:
+  a timer running for a task still marked pending, a task long past its window, a task
+  complete with unmarked steps. Rendered as `CHECK:` lines, not applied automatically.
+
+The division of labour: code owns arithmetic and bookkeeping (clock windows, which burner,
+what has been recorded), the model owns judgement (what the cook meant, what to do when
+something goes wrong, when to ask). A guardrail that silently corrected state would make the
+assistant a state machine with a voice; one that asks keeps it a cook's assistant.
+
 ## Claim checking
 
 State only changes through tools, so any first-person claim in the model's reply ("I've set
@@ -293,10 +404,58 @@ message and speaks only the corrected reply. A claim still unbacked after that i
 with a `notice` on the websocket. Timer status remarks ("your rice timer is still running")
 are accepted when such a timer exists.
 
+## Dietary restrictions
+
+`none`, `halal`, `vegetarian` or `vegan`, chosen on the Recipes screen, stored in SQLite so
+it survives restarts, and changeable by voice with `set_diet`. It is not advisory: forbidden
+recipes cannot be ticked on the tablet, are listed separately in the planner under "NOT
+ALLOWED, do not recommend these", and the restriction is injected at the top of the system
+prompt so it governs every substitution and suggestion, not only the meal planner.
+
+[diet.py](src/cooking_assistant_ai/core/diet.py) separates two genuinely different questions:
+
+- **excluded** — the ingredient itself breaks the rule (pork or alcohol for halal, chicken for
+  vegetarian, dairy for vegan). Never recommended.
+- **check** — allowed, but depends on sourcing. Meat can be halal; no ingredient list can tell
+  you whether it was. The assistant says so instead of pretending to certify it.
+
+Plant-based products are exempted from the dairy rules by qualifier, so "coconut cream",
+"vegan butter" and "oat milk" are not mistaken for dairy, and word boundaries stop "beef
+tomato" and "vegetable stock" being read as meat.
+
+Verified live. On vegetarian it offered only the rice and sprouts, and when asked directly for
+the chicken replied *"Your kitchen is set to vegetarian, so chicken thighs aren't an option...
+or change your diet setting if you'd like to include poultry."* On halal it recommended the
+chicken but added *"make sure your chicken thighs are halal-certified"*, and when asked about
+deglazing with white wine — something no recipe mentions — answered *"Since this is a halal
+kitchen, skip the wine"* and suggested broth with lemon or cider vinegar.
+
+## Meal planning from the pantry
+
+Ask "what should I cook this week?" and the model calls `suggest_meals(meals=N)`.
+[mealplan.py](src/cooking_assistant_ai/core/mealplan.py) answers the factual half: for every
+stored recipe, how many of its ingredients are in stock, which are missing and by how much,
+and how many portions it makes, sorted so what you can cook today comes first. The model does
+the choosing, because "what would make a good week of food" is judgement, not arithmetic.
+
+Recipe names are matched to pantry names with the same normalizer the mise en place grouping
+uses, so "Garlic cloves, smashed" finds "garlic". Salt, pepper, water, oil, sugar, flour and
+butter are treated as staples: worth mentioning when short, never a reason to rule a recipe
+out. Amounts are only compared when the units agree, so 200 g of rice against "1.5 cups"
+counts as in stock rather than guessing at a conversion.
+
+`shopping_list(recipe_ids, scale)` turns a chosen set into what to buy, subtracting stock and
+merging duplicates across recipes. `GET /meal-options?meals=N` returns the same data as JSON.
+
 ## Scheduling semantics the model is told about
 
-- Default is ASAP: start now, or when the tasks it comes `after` end.
-- `must_finish_by: "plating"` schedules as late as possible so the task ends at plating.
+- Everything starts as soon as it can: now, or when the tasks it comes `after` end.
+- **There is normally no serving deadline.** Batch cooking has none, and setting one forces
+  every task as late as possible and manufactures conflicts. The Recipes screen only asks for
+  a time if you tick "serving at a set time", and the planning prompt tells the model not to
+  set `must_finish_by`.
+- If the cook does name a time ("we're eating at seven"), `set_target_plating` still works and
+  `must_finish_by: "plating"` then schedules that task to end exactly at plating.
 - `must_finish_by: "<task>"` schedules as late as possible so it ends when that task starts.
 - Ovens are shared when the temperature matches; burners and the air fryer are exclusive.
 - `appliance: "stovetop"` without a number gets the lowest burner free for its whole window

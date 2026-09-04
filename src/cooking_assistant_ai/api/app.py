@@ -206,6 +206,10 @@ class RecipeRef(BaseModel):
     recipe: str
 
 
+class DietChoice(BaseModel):
+    diet: str
+
+
 class StartCooking(BaseModel):
     recipe_ids: List[str]
     target_plating: Optional[str] = None
@@ -457,6 +461,29 @@ def create_app(settings: Optional[Settings] = None, llm: Optional[LLM] = None,
         if not store.delete_recipe(recipe_id):
             raise HTTPException(404, "no such recipe")
 
+    @app.get("/diet")
+    async def get_diet() -> Dict[str, Any]:
+        from cooking_assistant_ai.core.diet import DIETS, describe
+
+        return {"diet": store.diet, "options": list(DIETS), "description": describe(store.diet)}
+
+    @app.put("/diet")
+    async def put_diet(body: DietChoice) -> Dict[str, Any]:
+        try:
+            diet = store.set_diet(body.diet)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        from cooking_assistant_ai.core.diet import describe
+
+        return {"diet": diet, "description": describe(diet)}
+
+    @app.get("/meal-options")
+    async def meal_options(meals: Optional[int] = None, scale: float = 1.0) -> Dict[str, Any]:
+        """What the pantry supports, for the Recipes screen and for the model's tool."""
+        from cooking_assistant_ai.core.mealplan import options_dict
+
+        return options_dict(store, meals, scale)
+
     @app.get("/inventory")
     async def get_inventory() -> List[Dict[str, Any]]:
         return store.inventory()
@@ -550,16 +577,20 @@ def create_app(settings: Optional[Settings] = None, llm: Optional[LLM] = None,
         await live.broadcast({"type": "state", **state})
 
         titles = ", ".join(r.title for r in wanted)
-        plating = fmt_time(session.target_plating) if session.target_plating else "not set"
+        # Plating is optional and normally unset: batch cooking has no serving deadline, and a
+        # deadline forces every task as late as possible and invents conflicts.
+        plating = (f"Target plating: {fmt_time(session.target_plating)}."
+                   if session.target_plating else
+                   "No serving deadline: schedule everything as early as it can run.")
         existing = [t.label for t in session.tasks.values() if t.is_open]
         prompt = (
-            f"[SYSTEM] The cook chose these recipes on the tablet: {titles}. Target plating: {plating}.\n"
+            f"[SYSTEM] The cook chose these recipes on the tablet: {titles}. {plating}\n"
             + (f"Tasks already planned: {', '.join(existing)}. Extend the plan for the new recipes ({', '.join(new_titles) or 'none'}) without recreating those.\n" if existing else "")
             + "1. Build the complete plan now with add_task, following these rules exactly:\n"
               "   - One task per stretch on one appliance (sear, roast, boil, simmer, air fry). Never one task for a whole recipe.\n"
               "   - Every step_id belongs to at most ONE task. Never repeat a step in two tasks.\n"
               "   - Create no tasks for prep, seasoning, resting or serving steps: leave those out entirely, the cook plan places them for you.\n"
-              "   - Chain each dish with after=\"<previous task label>\", and put must_finish_by=\"plating\" on ONLY the last cooking task of each dish.\n"
+              "   - Chain each dish with after=\"<previous task label>\". Everything starts as soon as it can; do not set must_finish_by.\n"
               "   - appliance=\"stovetop\" picks a free burner; omit appliance and temp_f for anything off the heat.\n"
               "   Do not narrate the tool calls.\n"
               "2. Then brief the cook out loud in five or six short sentences from the PLAN SUMMARY the last tool "

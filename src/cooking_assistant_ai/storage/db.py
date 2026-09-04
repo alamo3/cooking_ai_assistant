@@ -34,9 +34,39 @@ class Store:
                     amount REAL NOT NULL,
                     unit TEXT
                 );
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
                 """
             )
             self.conn.commit()
+
+    # -- settings (household preferences that outlive a session) -------------
+
+    def get_setting(self, key: str, default: str = "") -> str:
+        with self._lock:
+            row = self.conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._lock:
+            self.conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                              (key, value))
+            self.conn.commit()
+
+    @property
+    def diet(self) -> str:
+        return self.get_setting("diet", "none")
+
+    def set_diet(self, diet: str) -> str:
+        from cooking_assistant_ai.core.diet import DIETS
+
+        d = (diet or "none").strip().lower()
+        if d not in DIETS:
+            raise ValueError(f"diet must be one of {', '.join(DIETS)}, got '{diet}'")
+        self.set_setting("diet", d)
+        return d
 
     def seed_if_empty(self) -> None:
         if not self.list_recipes():

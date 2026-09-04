@@ -363,7 +363,7 @@
   function renderState() {
     const s = app.state;
     if (!s) return;
-    $("#plating").textContent = s.target_plating ? "plating " + fmtTime(s.target_plating) : "plating not set";
+    $("#plating").textContent = s.target_plating ? "plating " + fmtTime(s.target_plating) : "";
     const p = $("#proactivity");
     if (document.activeElement !== p) p.value = s.proactivity;
     renderPlan(s.plan);
@@ -576,6 +576,10 @@
     box.innerHTML = "";
     try {
       choice.library = await api("GET", "/recipes");
+      const d = await api("GET", "/meal-options");
+      choice.diet = d.diet;
+      $("#diet-select").value = d.diet;
+      choice.blocked = new Map(d.recipes.filter((r) => !r.diet_ok).map((r) => [r.id, r.diet_note]));
     } catch (e) {
       box.appendChild(el("div", "empty", e.message));
       return;
@@ -584,9 +588,14 @@
     if (!choice.selected.size) for (const id of loaded) choice.selected.add(id);
     if (!choice.library.length) box.appendChild(el("div", "empty", "No recipes in the library yet. Import one below."));
     for (const r of choice.library) {
-      const card = el("label", "choice" + (choice.selected.has(r.id) ? " selected" : "") + (loaded.has(r.id) ? " loaded" : ""));
+      // A recipe the diet forbids cannot be selected at all: the restriction is not advisory.
+      const blocked = choice.blocked && choice.blocked.get(r.id);
+      if (blocked) choice.selected.delete(r.id);
+      const card = el("label", "choice" + (choice.selected.has(r.id) ? " selected" : "")
+        + (loaded.has(r.id) ? " loaded" : "") + (blocked ? " blocked" : ""));
       const cb = el("input");
       cb.type = "checkbox";
+      cb.disabled = !!blocked;
       cb.checked = choice.selected.has(r.id);
       cb.onchange = () => {
         if (cb.checked) choice.selected.add(r.id); else choice.selected.delete(r.id);
@@ -597,6 +606,7 @@
       const body = el("div");
       body.appendChild(el("div", "title", r.title));
       body.appendChild(el("div", "sub", `serves ${r.servings} · ${r.steps} steps` + (loaded.has(r.id) ? " · in this session" : "")));
+      if (blocked) body.appendChild(el("div", "diet-block", `${choice.diet}: ${blocked}`));
       card.appendChild(body);
       const del = el("button", "small danger del", "Delete");
       del.onclick = async (e) => {
@@ -640,9 +650,11 @@
   async function startCooking() {
     const ids = [...choice.selected];
     if (!ids.length) return;
+    // No serving deadline by default: batch cooking has none, and a deadline forces every
+    // task as late as possible. Tick the box only when eating at a set time.
     const body = { recipe_ids: ids };
     const at = $("#plating-time").value;
-    if (at) body.target_plating = at; else body.minutes_from_now = Number($("#plating-minutes").value) || 60;
+    if ($("#plating-on").checked && at) body.target_plating = at;
     const btn = $("#btn-start-cooking");
     btn.disabled = true;
     btn.textContent = "Planning…";
@@ -659,6 +671,14 @@
   }
   function bindRecipes() {
     $("#btn-start-cooking").addEventListener("click", startCooking);
+    $("#plating-on").addEventListener("change", (e) => { $("#plating-time").disabled = !e.target.checked; });
+    $("#diet-select").addEventListener("change", async (e) => {
+      try {
+        await api("PUT", "/diet", { diet: e.target.value });
+        toast(e.target.value === "none" ? "No dietary restriction" : `Diet set to ${e.target.value}`);
+        renderChoices();
+      } catch (err) { toast(err.message, true); }
+    });
     $("#import-form").addEventListener("submit", async (e) => {
       e.preventDefault();
       const input = $("#import-url");

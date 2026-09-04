@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import FrozenSet, Iterable, List, Optional, Set, Tuple
+from typing import FrozenSet, Iterable, List, Optional, Set, Tuple  # noqa: F401
 
 from cooking_assistant_ai.model.types import Session
 
@@ -91,6 +91,76 @@ def is_justified(claim: Claim, tools_ok: Iterable[str], session: Optional[Sessio
 def unjustified_claims(sentence: str, tools_ok: Iterable[str], session: Optional[Session] = None) -> List[Claim]:
     tools = set(tools_ok)
     return [c for c in find_claims(sentence) if not is_justified(c, tools, session)]
+
+
+# --------------------------------------------------------------------------- omissions
+#
+# The mirror of a claim: the cook says something that implies the world changed and the
+# model does not record it, so the plan silently drifts from the kitchen. Detection is
+# deliberately conservative, and the result is a nudge to the model rather than an
+# automatic tool call: deciding what the cook meant is the model's job, not a regex's.
+
+_QUESTION = re.compile(r"^\s*(what|when|where|which|who|why|how|is|are|do|does|did|can|could|"
+                       r"should|shall|will|would|am|was|were|have|has|any|remind|tell)\b|\?\s*$", re.I)
+
+_OMISSION_RULES: List[Tuple[str, "re.Pattern[str]", FrozenSet[str]]] = [
+    ("started",
+     re.compile(r"\b(?:it'?s|they'?re|that'?s|is|are)\s+(?:in|on)\s+(?:the\s+)?(?:oven|stove|stovetop|heat|"
+                r"burner|pan|air fryer|grill)\b"
+                r"|\b(?:going|goes|putting|put|puts)\s+(?:it|them|that|the \w+)?\s*(?:in|on)(?:to)?\s+(?:the\s+)?"
+                r"(?:oven|stove|stovetop|heat|burner|pan|air fryer|grill)\b"
+                r"|\b(?:the\s+)?\w+\s+(?:is|are)\s+(?:now\s+)?(?:on|in|simmering|boiling|roasting|frying|"
+                r"searing|baking|cooking)\b", re.I),
+     frozenset({"start_task", "mark_complete", "set_timer"})),
+    ("done",
+     re.compile(r"\b(?:i'?ve|i have|just)\s+(?:done|finished|completed|chopped|diced|sliced|minced|seared|"
+                r"rinsed|washed|peeled|trimmed|seasoned|prepped|prepared|mixed|added|flipped|drained|"
+                r"plated|served|started|put)\b"
+                r"|\b(?:that'?s|it'?s|they'?re)\s+(?:done|finished|ready|complete)\b"
+                r"|\b(?:finished|done with)\s+(?:the\s+)?\w+", re.I),
+     frozenset({"mark_complete", "complete_prep", "start_task", "skip_step"})),
+    ("skipped",
+     re.compile(r"\b(?:i'?m\s+)?(?:skipping|skip|leaving out|not doing|no)\s+(?:the\s+)?step\b"
+                r"|\bskip(?:ping)?\s+(?:the\s+)?\w+\s+step\b", re.I),
+     frozenset({"skip_step", "mark_complete"})),
+]
+
+
+@dataclass(frozen=True)
+class Omission:
+    kind: str
+    utterance: str
+    needs: FrozenSet[str]
+
+    def describe(self) -> str:
+        return f'the cook said "{self.utterance.strip()}" (expected {" or ".join(sorted(self.needs))})'
+
+
+def implied_state_change(utterance: str) -> Optional[Omission]:
+    """A statement by the cook that the world moved on. Questions never count."""
+    text = utterance.strip()
+    if not text or text.startswith("[SYSTEM]") or _QUESTION.match(text):
+        return None
+    for kind, pattern, needs in _OMISSION_RULES:
+        if pattern.search(text):
+            return Omission(kind, text, needs)
+    return None
+
+
+def missed_state_change(utterance: str, tools_ok: Iterable[str]) -> Optional[Omission]:
+    omission = implied_state_change(utterance)
+    if omission is None or omission.needs & set(tools_ok):
+        return None
+    return omission
+
+
+def omission_prompt(omission: Omission) -> str:
+    return (
+        "[SYSTEM] That turn changed nothing in the state, but " + omission.describe() + ". "
+        "If the kitchen really moved on, record it now with the right tool so the plan stays "
+        "accurate. If it did not, or you are unsure what they meant, ask them a short question. "
+        "Then reply to the cook as normal."
+    )
 
 
 def correction_prompt(claims: List[Claim]) -> str:

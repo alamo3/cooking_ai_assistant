@@ -86,7 +86,7 @@ class OpenRouterLLM(LLM):
                  base_url: str = DEFAULT_BASE_URL, temperature: float = 0.3,
                  timeout: float = 120.0, reasoning_effort: Optional[str] = None,
                  app_title: str = "Cooking Assistant", transport: Any = None,
-                 retries: int = 2, retry_base: float = 0.5):
+                 retries: int = 2, retry_base: float = 0.5, max_tokens: int = 4096):
         # Short backoff on purpose: a cook waiting at the stove is better served by failing
         # over to the local model in ~1.5 s than by three polite retries against a busy
         # provider. FallbackLLM catches what these retries do not.
@@ -101,6 +101,7 @@ class OpenRouterLLM(LLM):
         self.reasoning_effort = reasoning_effort or os.environ.get("COOK_OPENROUTER_REASONING") or None
         self.retries = retries
         self.retry_base = retry_base
+        self.max_tokens = int(os.environ.get("COOK_OPENROUTER_MAX_TOKENS", max_tokens))
         self.usage = Usage()
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -118,6 +119,10 @@ class OpenRouterLLM(LLM):
             "model": self.model,
             "messages": to_openai_messages(messages),
             "temperature": self.temperature,
+            # Without this, providers default max_tokens to the whole remaining context and
+            # some then reject their own default ("max_tokens: 100352 exceeds maximum
+            # 98304"). A kitchen reply plus its tool calls needs a fraction of this.
+            "max_tokens": self.max_tokens,
             "stream": stream,
         }
         if tools:
@@ -125,7 +130,12 @@ class OpenRouterLLM(LLM):
         if stream:
             body["stream_options"] = {"include_usage": True}
         if self.reasoning_effort:
-            body["reasoning"] = {"effort": self.reasoning_effort}
+            # "off" is the cloud equivalent of Ollama's think=False. Qwen3.5/3.6/3.7 and GLM
+            # all reason by default, which costs minutes per turn across 5-9 tool rounds.
+            if self.reasoning_effort in ("off", "false", "none", "disabled"):
+                body["reasoning"] = {"enabled": False}
+            else:
+                body["reasoning"] = {"effort": self.reasoning_effort}
         return body
 
     def _backoff(self, attempt: int) -> float:

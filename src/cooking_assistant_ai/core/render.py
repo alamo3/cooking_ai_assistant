@@ -140,8 +140,10 @@ def render_timeline(session: Session, now: datetime) -> str:
     except scheduler.ScheduleError as e:  # pragma: no cover - state should never be left invalid
         return f"TIMELINE ERROR: {e.reason}"
 
-    plating = fmt_time(session.target_plating) if session.target_plating else "not set"
-    lines = [f"Now: {fmt_time(now)}".ljust(32) + f"Target plating: {plating}", ""]
+    head = f"Now: {fmt_time(now)}".ljust(32)
+    if session.target_plating:
+        head += f"Target plating: {fmt_time(session.target_plating)}"
+    lines = [head.rstrip(), ""]
     if not session.tasks:
         lines.append("No tasks planned yet.")
     else:
@@ -162,6 +164,8 @@ def render_timeline(session: Session, now: datetime) -> str:
         lines.append(f"Next action: {when} - {nxt[1]}")
     problems = scheduler.all_violations(session)
     lines.append("Conflicts: " + ("none" if not problems else "; ".join(problems)))
+    for warning in scheduler.drift_warnings(session, now):
+        lines.append(f"CHECK: {warning}")
     return "\n".join(lines)
 
 

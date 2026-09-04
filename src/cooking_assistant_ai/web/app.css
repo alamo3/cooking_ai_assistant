@@ -63,6 +63,9 @@ input:focus { outline: 2px solid var(--accent); }
 .choice { display: grid; grid-template-columns: 44px 1fr auto; gap: 10px; align-items: start; background: var(--panel-2); border: 2px solid var(--line); border-radius: 12px; padding: 12px; cursor: pointer; }
 .choice.selected { border-color: var(--good); }
 .choice.loaded { border-color: var(--accent); }
+.choice.blocked { opacity: .55; border-style: dashed; cursor: not-allowed; }
+.choice .diet-block { color: var(--bad); font-size: 14px; margin-top: 4px; }
+.plating-pick select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
 .choice input[type=checkbox] { width: 28px; height: 28px; margin: 4px 0 0; accent-color: var(--good); }
 .choice .title { font-size: 20px; font-weight: 600; }
 .choice .sub { color: var(--muted); font-size: 15px; margin-top: 2px; }

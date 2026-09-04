@@ -266,6 +266,30 @@ def deadline_misses(session: Session) -> List[Tuple[Task, str]]:
     return out
 
 
+def drift_warnings(session: Session, now: datetime) -> List[str]:
+    """Contradictions between the plan and the evidence, phrased as questions for the model.
+
+    These are surfaced, never auto-applied: only a tool call may change state, and only the
+    model (or the cook) can say what actually happened in the kitchen.
+    """
+    out: List[str] = []
+    for timer in session.running_timers():
+        task = session.tasks.get(timer.task_id) if timer.task_id else None
+        if task is not None and task.status == "pending":
+            out.append(f'timer "{timer.label}" is running but {task.label} is still pending: '
+                       f"if it is on, start_task it")
+    for t in session.tasks.values():
+        if t.status == "active" and t.end_at and now > t.end_at + timedelta(minutes=5):
+            late = int((now - t.end_at).total_seconds() // 60)
+            out.append(f"{t.label} was due to finish {late}m ago and is still active: "
+                       f"ask the cook, then mark_complete or move_task")
+        if t.status == "complete" and t.step_ids:
+            missing = [s for s in t.step_ids if s not in session.completed_steps]
+            if missing:
+                out.append(f"{t.label} is complete but {len(missing)} of its steps are unmarked")
+    return out
+
+
 def all_violations(session: Session) -> List[str]:
     reasons = [r for _, _, r in appliance_conflicts(session)]
     reasons += burner_shortages(session)

@@ -86,9 +86,16 @@
     <div class="col-head">
       <h2>Choose what to cook</h2>
       <div class="plating-pick">
-        <label>Eat in <input id="plating-minutes" type="number" min="10" step="5" value="60"> min</label>
-        <span class="muted">or at</span>
-        <input id="plating-time" type="time">
+        <label class="muted">Diet
+          <select id="diet-select">
+            <option value="none">no restriction</option>
+            <option value="halal">halal</option>
+            <option value="vegetarian">vegetarian</option>
+            <option value="vegan">vegan</option>
+          </select>
+        </label>
+        <label class="muted"><input id="plating-on" type="checkbox"> serving at a set time</label>
+        <input id="plating-time" type="time" disabled>
         <button id="btn-start-cooking">Start cooking</button>
       </div>
     </div>
