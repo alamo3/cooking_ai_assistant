@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#14181f">
+<title>Kitchen Assistant</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="topbar">
+  <nav class="tabs">
+    <button class="tab active" data-screen="cook">Cook</button>
+    <button class="tab" data-screen="recipes">Recipes</button>
+    <button class="tab" data-screen="pantry">Pantry</button>
+  </nav>
+  <div class="clock">
+    <span id="now">--:--</span>
+    <span id="plating" class="muted">plating not set</span>
+  </div>
+  <div class="conn"><span id="conn-dot" class="dot"></span><span id="conn-text">connecting</span></div>
+</header>
+
+<div id="mic-banner" class="mic-banner" hidden></div>
+
+<main id="screen-cook" class="screen active">
+  <section class="col col-recipes">
+    <div class="col-head">
+      <h2>Plan <span id="plan-summary" class="muted"></span></h2>
+      <button id="btn-add-recipe" class="small">Recipes</button>
+    </div>
+    <div id="plan-now" class="plan-now"></div>
+    <div id="plan-next" class="plan-next"></div>
+    <details id="plan-all" class="plan-all">
+      <summary>Full plan <span id="plan-count" class="muted"></span></summary>
+      <div id="plan-list" class="plan-list"></div>
+    </details>
+    <details id="recipes-all" class="recipes-all">
+      <summary>Recipes <span id="recipes-count" class="muted"></span></summary>
+      <div id="recipe-cards" class="cards"></div>
+    </details>
+  </section>
+
+  <section class="col col-center">
+    <div class="assistant">
+      <div id="avatar" class="avatar" data-state="idle">
+        <div class="ring"></div>
+        <div class="face">
+          <div class="eye left"></div><div class="eye right"></div>
+          <div class="mouth"></div>
+        </div>
+      </div>
+      <div class="assistant-text">
+        <div id="status" class="status">Connecting</div>
+        <div id="next-action" class="next-action"></div>
+      </div>
+    </div>
+    <div id="conversation" class="conversation"></div>
+    <div class="controls">
+      <button id="listen-toggle" class="listen" disabled>Always listening: off</button>
+      <button id="ptt" class="ptt" disabled>Hold to talk</button>
+      <form id="text-form" class="text-form">
+        <input id="text-input" placeholder="or type here" autocomplete="off">
+        <button class="small">Send</button>
+      </form>
+    </div>
+  </section>
+
+  <section class="col col-right">
+    <h2>Timers</h2>
+    <div id="timers" class="timers"></div>
+    <h2>Timeline</h2>
+    <div id="timeline" class="timeline"></div>
+    <div id="conflicts" class="conflicts"></div>
+    <label class="proactivity">Proactivity
+      <input id="proactivity" type="range" min="0" max="1" step="0.1" value="0.5">
+    </label>
+  </section>
+</main>
+
+<main id="screen-recipes" class="screen">
+  <section class="recipes-screen">
+    <div class="col-head">
+      <h2>Choose what to cook</h2>
+      <div class="plating-pick">
+        <label>Eat in <input id="plating-minutes" type="number" min="10" step="5" value="60"> min</label>
+        <span class="muted">or at</span>
+        <input id="plating-time" type="time">
+        <button id="btn-start-cooking">Start cooking</button>
+      </div>
+    </div>
+    <div id="recipe-choices" class="choices"></div>
+    <form id="import-form" class="import-form">
+      <input id="import-url" type="url" placeholder="Paste a recipe URL to add it to the library">
+      <button class="small">Import</button>
+    </form>
+  </section>
+</main>
+
+<main id="screen-pantry" class="screen">
+  <section class="pantry">
+    <div class="col-head">
+      <h2>Pantry</h2>
+      <form id="pantry-add" class="pantry-add">
+        <input name="name" placeholder="item" required>
+        <input name="amount" type="number" step="any" min="0" placeholder="amount" required>
+        <input name="unit" placeholder="unit (g, ml, cup, blank)">
+        <button class="small">Add</button>
+      </form>
+    </div>
+    <table id="pantry-table" class="pantry-table">
+      <thead><tr><th>Item</th><th>Amount</th><th>Unit</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+
+<div id="toast" class="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

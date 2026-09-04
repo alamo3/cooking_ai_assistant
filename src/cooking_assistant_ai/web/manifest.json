@@ -1,0 +1,10 @@
+{
+  "name": "Kitchen Assistant",
+  "short_name": "Kitchen",
+  "start_url": "/app/",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#14181f",
+  "theme_color": "#14181f",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

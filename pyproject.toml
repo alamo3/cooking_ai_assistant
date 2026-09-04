@@ -1,0 +1,41 @@
+[project]
+name = "cooking-assistant-ai"
+version = "0.1.0"
+description = "Local, conversational, voice-ready cooking assistant (FastAPI + Ollama)"
+readme = "README.md"
+authors = [
+    { name = "Omar Alam", email = "omeralam7@gmail.com" }
+]
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "fastapi[standard]>=0.128.8",
+    "ollama>=0.6.2",
+    "cryptography>=42.0",
+]
+
+[project.optional-dependencies]
+# Local speech engines. `uv sync --extra speech`. Kokoro caps Python at 3.12.
+speech = [
+    "faster-whisper>=1.0",
+    "silero-vad>=5.1",
+    "kokoro>=0.9",
+    "soundfile>=0.12",
+    "numpy>=1.26",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+cooking-assistant-ai = "cooking_assistant_ai:main"
+
+[build-system]
+requires = ["uv_build>=0.12.9,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
