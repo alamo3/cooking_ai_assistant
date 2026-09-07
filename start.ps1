@@ -12,8 +12,10 @@
 .PARAMETER Voice     With -Dev, keep the speech engines on (each restart re-warms them)
 .PARAMETER Http      Serve plain HTTP. The tablet microphone will NOT work (browsers require HTTPS)
 .PARAMETER Force     If something is already serving on the port, stop it and take over
-.PARAMETER Cloud     Use OpenRouter for inference, falling back to the local model if it errors.
-                     Needs OPENROUTER_API_KEY set (setx OPENROUTER_API_KEY "sk-or-...").
+.PARAMETER Cloud     Default. OpenRouter for inference, falling back to the local model only if
+                     it errors. Needs OPENROUTER_API_KEY (setx OPENROUTER_API_KEY "sk-or-...").
+.PARAMETER Local     Use the local Ollama model instead. Holds ~19 GB of VRAM for as long as
+                     it stays resident, so this is no longer the default.
 #>
 param(
     [int]$Port = 8000,
@@ -25,6 +27,7 @@ param(
     [switch]$Voice,
     [switch]$Http,
     [switch]$Cloud,
+    [switch]$Local,
     [switch]$Force
 )
 if ($Dev -and -not $Voice) { $NoVoice = $true }
@@ -62,39 +65,72 @@ function Test-Ollama {
     } finally { $client.Close() }
 }
 
-# 1. Ollama
-if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
-    Write-Error "The 'ollama' command is not on PATH. Install Ollama or open a new terminal after installing."; exit 1
+# 1. Inference backend. Cloud first by default: the local model costs ~19 GB of resident
+# VRAM, and it is not built, connected to or loaded until a cloud request actually fails.
+if ($Local) {
+    $env:COOK_LLM = "ollama"
+    Write-Host "LLM: local $Model (holds VRAM while resident)"
+} elseif (-not $env:OPENROUTER_API_KEY) {
+    $env:COOK_LLM = "ollama"
+    Write-Host "No OPENROUTER_API_KEY, so falling back to the local model $Model." -ForegroundColor Yellow
+    Write-Host "  Set it once for cloud inference: setx OPENROUTER_API_KEY `"sk-or-...`"" -ForegroundColor DarkGray
+} else {
+    $env:COOK_LLM = "cloud"
+    $cloudModel = if ($env:COOK_OPENROUTER_MODEL) { $env:COOK_OPENROUTER_MODEL } else { "google/gemini-3.8-flash" }
+    Write-Host "LLM: $cloudModel via OpenRouter; local $Model only if it errors (no VRAM until then)"
 }
-if (-not (Test-Ollama)) {
-    # Prefer the desktop app: it owns the server, shows the tray icon, and outlives this script.
-    # A bare 'ollama serve' started here would die when this console closes.
-    $app = Join-Path (Split-Path (Get-Command ollama).Source) "ollama app.exe"
-    $log = Join-Path $env:TEMP "ollama-serve.log"
-    if (Test-Path $app) {
-        Write-Host "Ollama is not listening ($script:ollamaWhy); launching the Ollama app..."
-        Start-Process -FilePath $app
-    } else {
-        Write-Host "Ollama is not listening ($script:ollamaWhy); starting 'ollama serve'..."
-        Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden -RedirectStandardError $log
-    }
-    $tries = 0
-    while (-not (Test-Ollama) -and $tries -lt 45) { Start-Sleep -Seconds 1; $tries++ }
-    if (-not (Test-Ollama)) {
-        Write-Host "Ollama did not come up ($script:ollamaWhy)."
-        if (Test-Path $log) { Write-Host "--- ollama serve output:"; Get-Content $log -Tail 10 }
-        Write-Error "Start the Ollama app from the Start menu, wait for its tray icon, then run this script again."; exit 1
-    }
-    Write-Host "Ollama is up."
-}
-$models = (ollama list 2>&1) -join "`n"
-if ($LASTEXITCODE -ne 0) { Write-Error "'ollama list' failed: $models"; exit 1 }
-if ($models -notmatch [regex]::Escape($Model)) {
-    Write-Error "Model '$Model' is not in 'ollama list'. Create it or pass -Model."; exit 1
-}
-Write-Host "Ollama OK, model $Model"
 
-# 1b. GPU memory settings for Ollama. These are read by the Ollama server at startup, so they
+# 2. Ollama. Required when it is doing the inference; otherwise it is only the fallback for
+# when the internet drops, so a missing one is a warning rather than a reason not to cook.
+# Starting the server costs no VRAM: Ollama loads a model on the first request, not at boot.
+$ollamaRequired = ($env:COOK_LLM -eq "ollama")
+
+if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
+    if ($ollamaRequired) {
+        Write-Error "The 'ollama' command is not on PATH. Install Ollama or open a new terminal after installing."; exit 1
+    }
+    Write-Host "Ollama is not installed: no local fallback if the cloud is unreachable." -ForegroundColor Yellow
+} else {
+    if (-not (Test-Ollama)) {
+        # Prefer the desktop app: it owns the server, shows the tray icon, and outlives this
+        # script. A bare 'ollama serve' started here would die when this console closes.
+        $app = Join-Path (Split-Path (Get-Command ollama).Source) "ollama app.exe"
+        $log = Join-Path $env:TEMP "ollama-serve.log"
+        if (Test-Path $app) {
+            Write-Host "Ollama is not listening ($script:ollamaWhy); launching the Ollama app..."
+            Start-Process -FilePath $app
+        } else {
+            Write-Host "Ollama is not listening ($script:ollamaWhy); starting 'ollama serve'..."
+            Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden -RedirectStandardError $log
+        }
+        $tries = 0
+        while (-not (Test-Ollama) -and $tries -lt 45) { Start-Sleep -Seconds 1; $tries++ }
+    }
+
+    if (-not (Test-Ollama)) {
+        if ($ollamaRequired) {
+            Write-Host "Ollama did not come up ($script:ollamaWhy)."
+            if ($log -and (Test-Path $log)) { Write-Host "--- ollama serve output:"; Get-Content $log -Tail 10 }
+            Write-Error "Start the Ollama app from the Start menu, wait for its tray icon, then run this script again."; exit 1
+        }
+        Write-Host "Ollama did not start: no local fallback if the cloud is unreachable." -ForegroundColor Yellow
+    } else {
+        $models = (ollama list 2>&1) -join "`n"
+        if ($LASTEXITCODE -ne 0) {
+            if ($ollamaRequired) { Write-Error "'ollama list' failed: $models"; exit 1 }
+            Write-Host "'ollama list' failed, so the local fallback may not work." -ForegroundColor Yellow
+        } elseif ($models -notmatch [regex]::Escape($Model)) {
+            if ($ollamaRequired) { Write-Error "Model '$Model' is not in 'ollama list'. Create it or pass -Model."; exit 1 }
+            Write-Host "Ollama has no '$Model', so there is no local fallback. Create it or pass -Model." -ForegroundColor Yellow
+        } elseif ($ollamaRequired) {
+            Write-Host "Ollama OK, model $Model"
+        } else {
+            Write-Host "Ollama up, $Model available as fallback (not loaded, no VRAM used)"
+        }
+    }
+}
+
+# 3. GPU memory settings for Ollama. These are read by the Ollama server at startup, so they
 # are set as user environment variables; if they are missing here, Ollama was started before
 # they were set and should be restarted.
 foreach ($pair in @(@("OLLAMA_FLASH_ATTENTION", "1"), @("OLLAMA_KV_CACHE_TYPE", "q8_0"))) {
@@ -104,19 +140,7 @@ foreach ($pair in @(@("OLLAMA_FLASH_ATTENTION", "1"), @("OLLAMA_KV_CACHE_TYPE", 
     }
 }
 
-# 1c. Inference backend
-if ($Cloud) {
-    if (-not $env:OPENROUTER_API_KEY) {
-        Write-Error "-Cloud needs OPENROUTER_API_KEY. Set it once with: setx OPENROUTER_API_KEY `"sk-or-...`" (then open a new terminal)."
-        exit 1
-    }
-    $env:COOK_LLM = "cloud"
-    Write-Host "LLM: OpenRouter ($(if ($env:COOK_OPENROUTER_MODEL) { $env:COOK_OPENROUTER_MODEL } else { 'openai/gpt-oss-120b' })), local $Model as fallback"
-} else {
-    $env:COOK_LLM = "ollama"
-}
-
-# 2. Voice backends
+# 4. Voice backends
 $env:COOK_MODEL = $Model
 if ($NoVoice) {
     $env:COOK_STT = "none"; $env:COOK_TTS = "none"
@@ -131,7 +155,7 @@ if ($NoVoice) {
     Write-Host "TTS: Kokoro"
 }
 
-# 3. Addresses. HTTPS by default: browsers only expose the microphone in a secure context,
+# 5. Addresses. HTTPS by default: browsers only expose the microphone in a secure context,
 # so a tablet on http://<lan-ip> gets no mic at all.
 $scheme = if ($Http) { "http" } else { "https" }
 $lan = Get-LanAddress
@@ -145,7 +169,7 @@ if ($Http) {
     Write-Host "  (Fully Kiosk: turn on ignoring SSL errors), or install ${scheme}://${lan}:$Port/cert"
 }
 Write-Host ""
-# 3b. Is the port already taken? A second instance is the most common way this fails, and
+# 6. Is the port already taken? A second instance is the most common way this fails, and
 # retrying a bind conflict never helps, so deal with it before the supervisor loop starts.
 $owner = Get-PortOwner -Port $Port
 if ($owner) {
@@ -196,7 +220,7 @@ if ($Open) {
     } -ArgumentList "${scheme}://localhost:$Port" | Out-Null
 }
 
-# 4. Serve, supervised.
+# 7. Serve, supervised.
 #
 # The server cannot restart itself: once it exits there is nothing left to serve the page
 # that would bring it back. So this loop owns the lifecycle. The tablet's "Restart server"

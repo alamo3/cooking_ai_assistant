@@ -280,7 +280,17 @@ is configured), `speech_end`, `stop_playback` (barge-in: stop the speaker now), 
 `state` (timeline, timers, progress, plus a rendered `text`), `dropped` (why an utterance was
 discarded), `notice`, `error`.
 
-## Cloud inference (optional)
+## Cloud inference (the default)
+
+`COOK_LLM=cloud` is the default: Gemini 3.8 Flash via OpenRouter, with the local Ollama model
+as a safety net for when the internet drops mid-cook. The local model is **not built,
+connected to or warmed** until a cloud request actually fails — constructing it is cheap but
+warming it loads ~19 GB into VRAM, which would then sit there for the whole `keep_alive`
+window for a backend that may never be used. `/health` reports `local_loaded` so you can see
+whether it has ever been needed.
+
+Without an `OPENROUTER_API_KEY` this degrades to the local model rather than refusing to
+start. `start.ps1 -Local` (and `install.ps1 -Local`) forces local inference.
 
 `COOK_LLM` picks the backend: `ollama` (default, local), `openrouter`, or `cloud` (OpenRouter
 first, local Ollama automatically whenever it errors, so a dropped connection mid-meal does

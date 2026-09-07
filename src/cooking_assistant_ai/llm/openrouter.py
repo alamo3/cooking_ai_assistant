@@ -17,14 +17,27 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Union
 
 from cooking_assistant_ai.llm.client import LLM, Chunk, ToolCallRequest
 
 log = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-DEFAULT_OR_MODEL = os.environ.get("COOK_OPENROUTER_MODEL", "openai/gpt-oss-120b")
+# Chosen by the messy-recovery benchmark: fast, strong at replanning, and cheap enough that
+# a week of cooking costs pence ($0.75/M in, $3.75/M out).
+DEFAULT_OR_MODEL = os.environ.get("COOK_OPENROUTER_MODEL", "google/gemini-3.8-flash")
+
+
+def default_reasoning_for(model: str) -> Optional[str]:
+    """Reasoning effort when COOK_OPENROUTER_REASONING is not set.
+
+    Off wherever it is allowed: a hidden chain of thought measured 11,621 reasoning tokens
+    and 262 s for 90 spoken words, which is unusable when someone is standing at a hob.
+    Gemini's endpoint rejects disabling it outright ("Reasoning is mandatory"), so it gets
+    the smallest setting it will accept instead.
+    """
+    return "low" if "gemini" in model.lower() else "off"
 
 
 @dataclass
@@ -98,7 +111,9 @@ class OpenRouterLLM(LLM):
             raise RuntimeError("no OpenRouter API key: set OPENROUTER_API_KEY")
         self.base_url = base_url.rstrip("/")
         self.temperature = temperature
-        self.reasoning_effort = reasoning_effort or os.environ.get("COOK_OPENROUTER_REASONING") or None
+        self.reasoning_effort = (reasoning_effort
+                                 or os.environ.get("COOK_OPENROUTER_REASONING")
+                                 or default_reasoning_for(self.model))
         self.retries = retries
         self.retry_base = retry_base
         self.max_tokens = int(os.environ.get("COOK_OPENROUTER_MAX_TOKENS", max_tokens))
@@ -257,12 +272,34 @@ class FallbackLLM(LLM):
 
     A stream only falls back if it fails before emitting anything, so the cook never hears
     half an answer from one model followed by a whole answer from another.
+
+    `secondary` may be a callable returning an LLM instead of an LLM. It is then built on the
+    first fallback and not before, which is what keeps a local model out of VRAM while the
+    cloud is healthy: constructing OllamaLLM is cheap, but warming it loads ~19 GB of weights
+    that would then sit there for the whole keep_alive window doing nothing.
     """
 
-    def __init__(self, primary: LLM, secondary: LLM):
+    def __init__(self, primary: LLM, secondary: Union[LLM, Callable[[], LLM]]):
         self.primary = primary
-        self.secondary = secondary
+        self._make_secondary = secondary
+        # An instance is used as-is; anything else callable is a factory. Checking for a
+        # .stream attribute would not do: a class has one too, and would be mistaken for a
+        # built instance, which is exactly the eager construction this avoids.
+        already_built = isinstance(secondary, LLM) or not callable(secondary)
+        self._secondary: Optional[LLM] = secondary if already_built else None  # type: ignore[assignment]
         self.fallbacks = 0
+
+    @property
+    def secondary(self) -> LLM:
+        if self._secondary is None:
+            log.info("first fallback: building the local backend now")
+            self._secondary = self._make_secondary()  # type: ignore[operator]
+        return self._secondary
+
+    @property
+    def secondary_loaded(self) -> bool:
+        """False while the cloud has never failed, i.e. while no VRAM is being held."""
+        return self._secondary is not None
 
     async def stream(self, messages: List[Dict[str, Any]],
                      tools: Optional[List[Dict[str, Any]]] = None) -> AsyncIterator[Chunk]:
@@ -290,16 +327,18 @@ class FallbackLLM(LLM):
             return await self.secondary.complete(messages, json_schema)
 
     async def warm(self) -> None:
-        for llm in (self.primary, self.secondary):
-            warm = getattr(llm, "warm", None)
-            if warm:
-                try:
-                    await warm()
-                except Exception as e:  # pragma: no cover - warming is best effort
-                    log.warning("warm-up failed for %s: %s", type(llm).__name__, e)
+        """Warm the primary only. Warming the local fallback would load the model into VRAM
+        at startup for a backend that may never be used."""
+        warm = getattr(self.primary, "warm", None)
+        if warm:
+            try:
+                await warm()
+            except Exception as e:  # pragma: no cover - warming is best effort
+                log.warning("warm-up failed for %s: %s", type(self.primary).__name__, e)
 
     async def aclose(self) -> None:
-        for llm in (self.primary, self.secondary):
+        built = [self.primary] + ([self._secondary] if self._secondary is not None else [])
+        for llm in built:
             close = getattr(llm, "aclose", None)
             if close:
                 await close()

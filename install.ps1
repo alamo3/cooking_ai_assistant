@@ -4,7 +4,7 @@
   Ollama settings, firewall rule, and a logon task so it comes up with the machine.
 
   Run it once:      .\install.ps1
-  Cloud inference:  .\install.ps1 -Cloud
+  Local inference:  .\install.ps1 -Local     (cloud is the default)
   Check it over:    .\install.ps1 -WhatIfOnly
   Undo everything:  .\install.ps1 -Uninstall
 
@@ -14,7 +14,9 @@
 .PARAMETER Port         Port to serve on (default 8000)
 .PARAMETER Model        Ollama model for local inference (default kitchen:gemma-q8)
 .PARAMETER NoVoice      Skip the whisper.cpp / Kokoro checks and install text-only
-.PARAMETER Cloud        Configure the logon task to use OpenRouter, with the local model as fallback
+.PARAMETER Local        Use the local Ollama model instead of the cloud. It holds ~19 GB of VRAM
+                        while resident, which is why cloud is the default.
+.PARAMETER Cloud        Kept for compatibility; cloud is now the default.
 .PARAMETER NoStartup    Do everything except register the logon task
 .PARAMETER NoFirewall   Skip the firewall rule (the tablet will not be able to connect from the LAN)
 .PARAMETER WhatIfOnly   Report what would happen and change nothing
@@ -25,6 +27,7 @@ param(
     [string]$Model = "kitchen:gemma-q8",
     [switch]$NoVoice,
     [switch]$Cloud,
+    [switch]$Local,
     [switch]$NoStartup,
     [switch]$NoFirewall,
     [switch]$WhatIfOnly,
@@ -118,15 +121,20 @@ if ($WhatIfOnly) {
 
 Step "Checking the inference backend"
 
-if ($Cloud) {
-    $key = [Environment]::GetEnvironmentVariable("OPENROUTER_API_KEY", "User")
-    if (-not $key -and -not $env:OPENROUTER_API_KEY) {
-        Fail "-Cloud needs an OpenRouter key. Set it once, then run this again:"
-        Write-Host "        setx OPENROUTER_API_KEY `"sk-or-...`"" -ForegroundColor DarkGray
-        exit 1
-    }
-    Ok "OPENROUTER_API_KEY is set"
+# Cloud is the default: the local model costs ~19 GB of resident VRAM, and it is not loaded
+# at all unless a cloud request fails.
+$key = [Environment]::GetEnvironmentVariable("OPENROUTER_API_KEY", "User")
+$haveKey = [bool]($key -or $env:OPENROUTER_API_KEY)
+$useCloud = -not $Local
+if ($useCloud -and -not $haveKey) {
+    Warn "no OPENROUTER_API_KEY, so this will run on the local model. For cloud inference:"
+    Write-Host "        setx OPENROUTER_API_KEY `"sk-or-...`"   (then re-run this script)" -ForegroundColor DarkGray
+    $useCloud = $false
+} elseif ($useCloud) {
+    Ok "OPENROUTER_API_KEY is set; cloud inference, local model only as fallback"
     Warn "the key is read from your user environment; it is never written into this folder"
+} else {
+    Ok "local inference (-Local): the model stays resident in VRAM"
 }
 
 if (Get-Command ollama -ErrorAction SilentlyContinue) {
@@ -148,10 +156,10 @@ if (Get-Command ollama -ErrorAction SilentlyContinue) {
             }
         } else { Ok "$($pair[0])=$($pair[1])" }
     }
-} elseif ($Cloud) {
+} elseif ($useCloud) {
     Warn "Ollama is not installed, so there is no local fallback if OpenRouter is unreachable"
 } else {
-    Fail "Ollama is not on PATH. Install it from https://ollama.com, or re-run with -Cloud."
+    Fail "Ollama is not on PATH. Install it from https://ollama.com, or drop -Local to use the cloud."
     exit 1
 }
 
@@ -225,7 +233,7 @@ if (-not $NoStartup) {
     $ps = (Get-Command powershell.exe).Source
     $taskArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Minimized -File `"$root\start.ps1`" -Port $Port -Model $Model"
     if ($NoVoice) { $taskArgs += " -NoVoice" }
-    if ($Cloud) { $taskArgs += " -Cloud" }
+    if (-not $useCloud) { $taskArgs += " -Local" }
 
     if ($WhatIfOnly) {
         Would "register scheduled task '$TaskName' running: powershell $taskArgs"

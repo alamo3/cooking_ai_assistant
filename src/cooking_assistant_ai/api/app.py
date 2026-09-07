@@ -25,7 +25,7 @@ from cooking_assistant_ai.core.fmt import fmt_dur, fmt_time, parse_clock_time
 from cooking_assistant_ai.core.render import recipe_view
 from cooking_assistant_ai.core.tools import dispatch
 from cooking_assistant_ai.llm.client import DEFAULT_MODEL, LLM, OllamaLLM, ScriptedLLM
-from cooking_assistant_ai.llm.factory import build_llm
+from cooking_assistant_ai.llm.factory import DEFAULT_BACKEND, build_llm
 from cooking_assistant_ai.llm.openrouter import FallbackLLM, OpenRouterLLM
 from cooking_assistant_ai.llm.llm_orchestrator import (
     Notice,
@@ -55,7 +55,7 @@ class Settings:
     warm_model: bool = os.environ.get("COOK_WARM", "1") == "1"
     stt: str = os.environ.get("COOK_STT", "none")
     tts: str = os.environ.get("COOK_TTS", "none")
-    backend: str = os.environ.get("COOK_LLM", "ollama")  # ollama | openrouter | cloud
+    backend: str = os.environ.get("COOK_LLM", DEFAULT_BACKEND)  # cloud | openrouter | ollama
     vad: str = os.environ.get("COOK_VAD", "silero")
     barge_in: str = os.environ.get("COOK_BARGE_IN", "voice")  # voice | transcript | off
     # Session snapshots: how often to write, and how stale a snapshot may be and still be
@@ -525,6 +525,8 @@ def create_app(settings: Optional[Settings] = None, llm: Optional[LLM] = None,
                              "cost_usd": round(remote.usage.cost_usd, 5)}
             if isinstance(llm, FallbackLLM):
                 info["fallbacks_to_local"] = llm.fallbacks
+                # False means the local model has never been needed, so it holds no VRAM.
+                info["local_loaded"] = llm.secondary_loaded
         return info
 
     @app.get("/admin/status")
