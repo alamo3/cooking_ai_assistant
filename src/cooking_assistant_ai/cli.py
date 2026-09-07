@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import shlex
 import sys
 from datetime import datetime
@@ -48,6 +49,9 @@ async def _readline(prompt: str) -> Optional[str]:
 
 
 async def repl(args: argparse.Namespace) -> None:
+    # An explicit flag wins; otherwise fall back to the environment, then the built-in default.
+    args.db = args.db or os.environ.get("COOK_DB", "cooking.db")
+    args.model = args.model or os.environ.get("COOK_MODEL", DEFAULT_MODEL)
     clock = Clock(datetime.now().replace(second=0, microsecond=0)) if args.sim else Clock()
     store = Store(args.db)
     session = Session(id="repl", started_at=clock.now())
@@ -180,10 +184,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="cooking-assistant-ai")
     sub = p.add_subparsers(dest="cmd")
 
+    # --model / --db default to None so an explicit flag can be told apart from "not given".
+    # Otherwise the argparse default silently overwrites COOK_MODEL / COOK_DB in the
+    # environment, and setting those has no effect.
     r = sub.add_parser("repl", help="terminal driver (Phase 1/2)")
     r.add_argument("--no-llm", action="store_true", help="drive tools by hand, no model")
-    r.add_argument("--model", default=DEFAULT_MODEL)
-    r.add_argument("--db", default="cooking.db")
+    r.add_argument("--model", default=None, help=f"default: $COOK_MODEL or {DEFAULT_MODEL}")
+    r.add_argument("--db", default=None, help="default: $COOK_DB or cooking.db")
     r.add_argument("--sim", action="store_true", help="frozen clock; move it with /now")
     r.add_argument("--load", nargs="*", help="recipe ids/titles to load at start")
     r.add_argument("--idle-interval", type=float, default=60.0)
@@ -191,8 +198,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("serve", help="FastAPI server (HTTP + websocket)")
     s.add_argument("--host", default="0.0.0.0")
     s.add_argument("--port", type=int, default=8000)
-    s.add_argument("--model", default=DEFAULT_MODEL)
-    s.add_argument("--db", default="cooking.db")
+    s.add_argument("--model", default=None, help=f"default: $COOK_MODEL or {DEFAULT_MODEL}")
+    s.add_argument("--db", default=None, help="default: $COOK_DB or cooking.db")
     s.add_argument("--no-llm", action="store_true")
     s.add_argument("--reload", action="store_true", help="restart when a .py file under src/ changes (drops the session)")
     s.add_argument("--https", action="store_true",
@@ -211,8 +218,10 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         import uvicorn
 
-        os.environ["COOK_MODEL"] = args.model
-        os.environ["COOK_DB"] = args.db
+        if args.model:
+            os.environ["COOK_MODEL"] = args.model
+        if args.db:
+            os.environ["COOK_DB"] = args.db
         if args.no_llm:
             os.environ["COOK_NO_LLM"] = "1"
         ssl_args = {}
@@ -220,10 +229,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             if args.cert and args.key:
                 cert, key = Path(args.cert), Path(args.key)
             else:
-                from cooking_assistant_ai.api.tls import ensure_cert, local_addresses
+                from cooking_assistant_ai.api.tls import ensure_cert, lan_addresses
 
                 cert, key = ensure_cert()
-                lan = [a for a in local_addresses() if a != "127.0.0.1"]
+                lan = lan_addresses()  # best first: the LAN, not a VPN tunnel
                 print(f"TLS on (self-signed certificate at {cert}).")
                 for a in lan:
                     print(f"  Tablet: https://{a}:{args.port}/")
@@ -232,9 +241,31 @@ def main(argv: Optional[List[str]] = None) -> None:
             ssl_args = {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
 
         src_dir = str(Path(__file__).resolve().parent)
-        uvicorn.run("cooking_assistant_ai.main:app", host=args.host, port=args.port,
-                    reload=args.reload, reload_dirs=[src_dir] if args.reload else None,
-                    reload_includes=["*.py"] if args.reload else None, **ssl_args)
+        if args.reload:
+            # uvicorn's own reloader owns the process tree here, so the restart endpoint
+            # stays unavailable; file changes are picked up automatically instead.
+            uvicorn.run("cooking_assistant_ai.main:app", host=args.host, port=args.port,
+                        reload=True, reload_dirs=[src_dir], reload_includes=["*.py"], **ssl_args)
+            return
+
+        # Drive the server by hand rather than uvicorn.run(), so /admin/restart has something
+        # to stop. Exiting with RESTART_EXIT_CODE tells the supervisor in start.ps1 to
+        # relaunch us; any other non-zero code is a crash and gets backed off.
+        from cooking_assistant_ai.api import admin
+
+        config = uvicorn.Config("cooking_assistant_ai.main:app", host=args.host, port=args.port,
+                                **ssl_args)
+        server = uvicorn.Server(config)
+
+        def _stop() -> None:
+            server.should_exit = True
+
+        admin.register_stopper(_stop)
+        admin.reset()
+        server.run()
+        if admin.restart_requested():
+            print("restart requested; handing back to the supervisor")
+            sys.exit(admin.RESTART_EXIT_CODE)
     else:
         if args.cmd is None:
             args = build_parser().parse_args(["repl"] + list(argv or sys.argv[1:]))

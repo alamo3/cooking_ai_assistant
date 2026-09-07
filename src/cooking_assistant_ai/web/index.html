@@ -22,7 +22,22 @@
     <span id="plating" class="muted">plating not set</span>
   </div>
   <div class="conn"><span id="conn-dot" class="dot"></span><span id="conn-text">connecting</span></div>
+  <button id="server-chip" class="server-chip" title="Server">
+    <span class="gear">&#9881;</span><span id="server-badge" class="server-badge" hidden></span>
+  </button>
 </header>
+
+<div id="server-panel" class="server-panel" hidden>
+  <div class="server-row"><span>Uptime</span><b id="srv-uptime">-</b></div>
+  <div class="server-row"><span>Model</span><b id="srv-model">-</b></div>
+  <div class="server-row"><span>Backend</span><b id="srv-backend">-</b></div>
+  <div id="srv-changed" class="server-changed" hidden></div>
+  <div id="srv-warn" class="server-warn" hidden></div>
+  <div class="server-actions">
+    <button id="srv-restart" class="small">Restart server</button>
+    <button id="srv-close" class="small ghost">Close</button>
+  </div>
+</div>
 
 <div id="mic-banner" class="mic-banner" hidden></div>
 
@@ -47,11 +62,23 @@
   <section class="col col-center">
     <div class="assistant">
       <div id="avatar" class="avatar" data-state="idle">
-        <div class="ring"></div>
-        <div class="face">
-          <div class="eye left"></div><div class="eye right"></div>
-          <div class="mouth"></div>
-        </div>
+        <svg class="chef" viewBox="0 0 100 104" aria-hidden="true">
+          <circle class="halo" cx="50" cy="56" r="46"/>
+          <circle class="halo-spin" cx="50" cy="56" r="46"/>
+          <g class="steam">
+            <path d="M36 12c4-4 0-7 0-10"/><path d="M50 8c4-5 0-8 0-11"/><path d="M64 12c4-4 0-7 0-10"/>
+          </g>
+          <g class="toque">
+            <circle cx="32" cy="32" r="12"/><circle cx="50" cy="25" r="14"/><circle cx="68" cy="32" r="12"/>
+            <path class="band" d="M31 39h38v8a5 5 0 0 1-5 5H36a5 5 0 0 1-5-5z"/>
+          </g>
+          <circle class="head" cx="50" cy="66" r="23"/>
+          <g class="brows"><path d="M38 57c3-2 7-2 10 0"/><path d="M52 57c3-2 7-2 10 0"/></g>
+          <g class="eyes"><ellipse class="eye" cx="43" cy="64" rx="3.4" ry="4.2"/>
+            <ellipse class="eye" cx="57" cy="64" rx="3.4" ry="4.2"/></g>
+          <path class="mouth-smile" d="M42 75c4 5 12 5 16 0"/>
+          <ellipse class="mouth-open" cx="50" cy="76" rx="7" ry="5"/>
+        </svg>
       </div>
       <div class="assistant-text">
         <div id="status" class="status">Connecting</div>
@@ -99,6 +126,13 @@
         <button id="btn-start-cooking">Start cooking</button>
       </div>
     </div>
+    <form id="suggest-form" class="suggest-form">
+      <label>Not sure what to cook? Suggest meals for
+        <input id="suggest-meals" type="number" min="1" max="30" step="1" value="8"> portions</label>
+      <button class="small">Ask</button>
+      <span id="suggest-hint" class="muted">uses what's in your pantry</span>
+    </form>
+    <div id="suggest-out" class="suggest-out" hidden></div>
     <div id="recipe-choices" class="choices"></div>
     <form id="import-form" class="import-form">
       <input id="import-url" type="url" placeholder="Paste a recipe URL to add it to the library">

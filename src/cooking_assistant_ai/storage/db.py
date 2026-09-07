@@ -1,13 +1,23 @@
-"""SQLite persistence for recipes and inventory. Session state is never persisted (spec 1.5)."""
+"""SQLite persistence for recipes, inventory and session snapshots.
+
+The spec (1.5) kept session state out of the database so it could never be a second source of
+truth. It still is not one: the snapshots here are write-only while the server runs, read only
+at startup, and the live Session in memory always wins. What they buy is a cook surviving a
+crash or a power cut instead of losing their plan and timers.
+"""
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
 
 from cooking_assistant_ai.model.types import Recipe
 from cooking_assistant_ai.storage.seed import SEED_INVENTORY, SEED_RECIPES
+
+log = logging.getLogger(__name__)
 
 
 class Store:
@@ -37,6 +47,11 @@ class Store:
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id TEXT PRIMARY KEY,
+                    updated_at TEXT NOT NULL,
+                    body TEXT NOT NULL
                 );
                 """
             )
@@ -116,6 +131,48 @@ class Store:
             cur = self.conn.execute("DELETE FROM recipes WHERE id = ?", (recipe_id,))
             self.conn.commit()
         return cur.rowcount > 0
+
+    # -- cooking sessions (snapshots, so a crash or power cut is recoverable) ---
+
+    def save_session(self, session_id: str, body: Dict[str, Any]) -> None:
+        with self._lock:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO sessions (id, updated_at, body) VALUES (?, ?, ?)",
+                (session_id, datetime.now().isoformat(), json.dumps(body)),
+            )
+            self.conn.commit()
+
+    def load_sessions(self, max_age_s: Optional[float] = None) -> List[Tuple[str, datetime, Dict[str, Any]]]:
+        """Snapshots newest first, as (id, saved_at, body). Corrupt rows are skipped, not raised:
+        a bad snapshot must never stop the server from starting."""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id, updated_at, body FROM sessions ORDER BY updated_at DESC").fetchall()
+        out: List[Tuple[str, datetime, Dict[str, Any]]] = []
+        now = datetime.now()
+        for row in rows:
+            try:
+                saved = datetime.fromisoformat(row["updated_at"])
+                if max_age_s is not None and (now - saved).total_seconds() > max_age_s:
+                    continue
+                out.append((row["id"], saved, json.loads(row["body"])))
+            except (ValueError, TypeError, json.JSONDecodeError):
+                log.warning("skipping unreadable session snapshot %s", row["id"])
+        return out
+
+    def delete_session(self, session_id: str) -> bool:
+        with self._lock:
+            cur = self.conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            self.conn.commit()
+        return cur.rowcount > 0
+
+    def prune_sessions(self, max_age_s: float) -> int:
+        """Drop snapshots too old to be worth resuming."""
+        cutoff = (datetime.now() - timedelta(seconds=max_age_s)).isoformat()
+        with self._lock:
+            cur = self.conn.execute("DELETE FROM sessions WHERE updated_at < ?", (cutoff,))
+            self.conn.commit()
+        return cur.rowcount
 
     def next_recipe_id(self) -> str:
         ids = [r.id for r in self.list_recipes()]

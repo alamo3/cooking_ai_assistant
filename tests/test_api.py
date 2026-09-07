@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from cooking_assistant_ai.api.app import Settings, create_app
+from cooking_assistant_ai.core.tools import dispatch
 from cooking_assistant_ai.llm.client import ScriptedLLM, call
 from cooking_assistant_ai.storage.db import Store
 
@@ -171,3 +172,18 @@ def test_websocket_turn(client):
         assert ws.receive_json()["proactivity"] == 0.2
         ws.send_json({"type": "audio", "data": ""})
         assert "no STT" in ws.receive_json()["text"]
+
+
+def test_substitution_is_saved_to_the_library(client):
+    """A swap edits the stored recipe, so the Recipes screen shows it with or without a session."""
+    sid = client.post("/session", json={"recipe_ids": ["r001"]}).json()["session_id"]
+    ctx = client.app.state.manager.get(sid).orchestrator.ctx
+    assert dispatch(ctx, "substitute", {"recipe_id": "r001", "ingredient_id": "butter",
+                                        "replacement": "olive oil"}).ok
+
+    step = lambda d: next(s["text"] for s in d["steps"] if "skillet" in s["text"])
+    for view in (client.get("/recipes/r001").json(),
+                 client.get(f"/recipes/r001?session={sid}").json()):
+        assert "olive oil" in step(view) and "butter" not in step(view)
+    assert not any(i["name"] == "butter" for i in client.get("/recipes/r001").json()["ingredients"])
+    assert client.get("/recipes/r001?session=nosuch").status_code == 200  # unknown session, no crash

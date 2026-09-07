@@ -20,7 +20,9 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from cooking_assistant_ai.core.fmt import fmt_time, parse_clock_time
+from cooking_assistant_ai.api import admin
+from cooking_assistant_ai.core.fmt import fmt_dur, fmt_time, parse_clock_time
+from cooking_assistant_ai.core.render import recipe_view
 from cooking_assistant_ai.core.tools import dispatch
 from cooking_assistant_ai.llm.client import DEFAULT_MODEL, LLM, OllamaLLM, ScriptedLLM
 from cooking_assistant_ai.llm.factory import build_llm
@@ -38,6 +40,7 @@ from cooking_assistant_ai.llm.llm_orchestrator import (
 from cooking_assistant_ai.model.types import Recipe, Session
 from cooking_assistant_ai.speech import STT, TTS, SentenceSplitter, build_stt, build_tts, build_vad
 from cooking_assistant_ai.speech.listener import Listener
+from cooking_assistant_ai.storage import sessions as session_snapshots
 from cooking_assistant_ai.storage.db import Store
 
 log = logging.getLogger(__name__)
@@ -55,6 +58,11 @@ class Settings:
     backend: str = os.environ.get("COOK_LLM", "ollama")  # ollama | openrouter | cloud
     vad: str = os.environ.get("COOK_VAD", "silero")
     barge_in: str = os.environ.get("COOK_BARGE_IN", "voice")  # voice | transcript | off
+    # Session snapshots: how often to write, and how stale a snapshot may be and still be
+    # worth resuming. Twelve hours covers "the power went out during dinner"; anything older
+    # is last week's cook and only gets in the way.
+    autosave_s: float = float(os.environ.get("COOK_AUTOSAVE", "10"))
+    session_max_age_s: float = float(os.environ.get("COOK_SESSION_MAX_AGE", str(12 * 3600)))
 
 
 # --------------------------------------------------------------------------- live session
@@ -72,6 +80,8 @@ class LiveSession:
                                          idle_interval_s=settings.idle_interval_s)
         self.listener: Optional[Listener] = None
         self.playing = False  # client-reported playback state, for barge-in and echo guard
+        self.last_snapshot: Optional[Dict[str, Any]] = None  # what is already in the database
+        self.on_state_change = None  # set by the manager, to snapshot after every tool call
 
     # -- open microphone ------------------------------------------------------
 
@@ -143,6 +153,11 @@ class LiveSession:
                 "ok": ev.result.get("ok"), "message": ev.result.get("message") or ev.result.get("reason"),
             })
         elif isinstance(ev, StateChanged):
+            # A tool just changed the plan, a timer or the progress. These are exactly the
+            # moments a power cut must not undo, so snapshot now rather than waiting for the
+            # autosave tick.
+            if self.on_state_change:
+                self.on_state_change(self.session.id)
             await self.broadcast({"type": "state", **ev.state})
         elif isinstance(ev, Notice):
             await self.broadcast({"type": "notice", "text": ev.text, "level": ev.level})
@@ -174,6 +189,7 @@ class SessionManager:
         if proactivity is not None:
             session.proactivity = max(0.0, min(1.0, proactivity))
         live = LiveSession(session, self.llm, self.store, self.settings, self.tts, self.stt)
+        live.on_state_change = self.persist
         live.orchestrator.start()
         self.sessions[session.id] = live
         return live
@@ -184,10 +200,42 @@ class SessionManager:
             raise HTTPException(404, "no such session")
         return live
 
-    async def delete(self, session_id: str) -> None:
+    def restore(self, session: Session) -> LiveSession:
+        """Bring a snapshot back to life. The orchestrator picks the timers up from there."""
+        live = LiveSession(session, self.llm, self.store, self.settings, self.tts, self.stt)
+        live.on_state_change = self.persist
+        live.orchestrator.start()
+        live.orchestrator.sync_timers()
+        self.sessions[session.id] = live
+        return live
+
+    def persist(self, session_id: Optional[str] = None) -> int:
+        """Snapshot sessions worth keeping. Returns how many were actually written."""
+        written = 0
+        for sid, live in list(self.sessions.items()):
+            if session_id and sid != session_id:
+                continue
+            if not session_snapshots.is_worth_saving(live.session):
+                continue
+            body = session_snapshots.to_dict(live.session)
+            if live.last_snapshot == body:
+                continue  # nothing changed since the last write
+            try:
+                self.store.save_session(sid, body)
+                live.last_snapshot = body
+                written += 1
+            except Exception as e:  # a failed snapshot must never take the cook down
+                log.warning("could not snapshot session %s: %s", sid, e)
+        return written
+
+    async def delete(self, session_id: str, purge: bool = False) -> None:
+        """purge=True for a cook that is genuinely over: drop the snapshot too, so the next
+        startup does not helpfully restore a meal that was eaten yesterday."""
         live = self.sessions.pop(session_id, None)
         if live:
             await live.orchestrator.stop()
+        if purge:
+            self.store.delete_session(session_id)
 
     async def shutdown(self) -> None:
         for sid in list(self.sessions):
@@ -378,8 +426,55 @@ def create_app(settings: Optional[Settings] = None, llm: Optional[LLM] = None,
     tts = tts or build_tts(settings.tts)
     manager = SessionManager(store, llm, settings, tts, stt)
 
+    def restore_sessions() -> List[str]:
+        """Bring back any cook that was interrupted by a crash, a restart or a power cut."""
+        restored: List[str] = []
+        try:
+            store.prune_sessions(settings.session_max_age_s)
+            snapshots = store.load_sessions(max_age_s=settings.session_max_age_s)
+        except Exception as e:
+            log.warning("could not read session snapshots: %s", e)
+            return restored
+        now = datetime.now()
+        for sid, saved_at, body in snapshots:
+            if body.get("v") != session_snapshots.SCHEMA_VERSION:
+                log.info("dropping session %s: snapshot format %s is no longer readable",
+                         sid, body.get("v"))
+                store.delete_session(sid)
+                continue
+            try:
+                session = session_snapshots.from_dict(body)
+            except Exception as e:
+                log.warning("could not restore session %s: %s", sid, e)
+                store.delete_session(sid)
+                continue
+            # Timers that ran out while we were down must not all fire at once on startup.
+            late = session_snapshots.expire_timers(session, now)
+            if late:
+                labels = ", ".join(t.label for t in late)
+                gap = fmt_dur(int((now - saved_at).total_seconds()))
+                session.notes.append(
+                    f"The server was down for about {gap}. These timers finished while it was "
+                    f"off and were not announced: {labels}. Check them before carrying on.")
+            manager.restore(session)
+            restored.append(sid)
+            titles = ", ".join(r.title for r in session.recipes.values()) or "no recipes"
+            # Printed, not logged: after a power cut this is the first thing worth seeing.
+            print(f"Recovered the cook from {fmt_time(saved_at)}: {titles}"
+                  + (f" ({len(late)} timer(s) finished while it was down)" if late else ""))
+        return restored
+
+    async def autosave() -> None:
+        while True:
+            await asyncio.sleep(settings.autosave_s)
+            try:
+                manager.persist()
+            except Exception as e:  # never let the snapshot loop die quietly
+                log.warning("autosave failed: %s", e)
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        app.state.restored_sessions = restore_sessions()
         if settings.warm_model:
             for name, thing in (("llm", llm), ("stt", stt), ("tts", tts)):
                 if name == "llm" and not hasattr(llm, "warm"):
@@ -388,7 +483,11 @@ def create_app(settings: Optional[Settings] = None, llm: Optional[LLM] = None,
                     await asyncio.wait_for(thing.warm(), timeout=180)  # type: ignore[union-attr]
                 except Exception as e:  # server may not be up yet; first turn will retry
                     log.warning("%s warm-up failed: %s", name, e)
+        saver = asyncio.create_task(autosave()) if settings.autosave_s > 0 else None
         yield
+        if saver:
+            saver.cancel()
+        manager.persist()  # a clean shutdown still snapshots, so a restart loses nothing
         await manager.shutdown()
         await stt.aclose()
 
@@ -428,16 +527,61 @@ def create_app(settings: Optional[Settings] = None, llm: Optional[LLM] = None,
                 info["fallbacks_to_local"] = llm.fallbacks
         return info
 
+    @app.get("/admin/status")
+    async def admin_status() -> Dict[str, Any]:
+        """Enough for the tablet to decide whether a restart is worth offering."""
+        changed = admin.changed_files()
+        active = [sid for sid, s in manager.sessions.items() if s.session.recipes]
+        return {
+            "pid": os.getpid(),
+            "uptime_s": round(admin.uptime_s(), 1),
+            "code_changed": bool(changed),
+            "changed_files": changed[:20],
+            "changed_count": len(changed),
+            "can_restart": admin.can_restart(),
+            "sessions": list(manager.sessions),
+            "active_sessions": active,
+            "model": settings.model,
+            "backend": settings.backend,
+        }
+
+    @app.post("/admin/restart", status_code=202)
+    async def admin_restart(body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Ask the supervisor for a fresh process. The tablet's websocket reconnects on its own."""
+        if not admin.can_restart():
+            raise HTTPException(503, "this server was not started by the supervisor "
+                                     "(use start.ps1), so it cannot restart itself")
+        force = bool((body or {}).get("force"))
+        # A restart throws away every cooking session: timers, tasks and progress are all
+        # in memory. Never do that to a cook mid-recipe without being told twice.
+        active = [sid for sid, s in manager.sessions.items() if s.session.recipes]
+        if active and not force:
+            raise HTTPException(409, f"{len(active)} cooking session(s) in progress; "
+                                     f"restarting loses their timers and progress. "
+                                     f"Send force=true to restart anyway.")
+
+        async def _go() -> None:
+            await asyncio.sleep(0.25)  # let this response reach the tablet first
+            admin.request_restart()
+
+        asyncio.create_task(_go())
+        return {"ok": True, "restarting": True, "lost_sessions": active}
+
     @app.get("/recipes")
     async def list_recipes() -> List[Dict[str, Any]]:
         return [{"id": r.id, "title": r.title, "servings": r.servings, "steps": len(r.steps)}
                 for r in store.list_recipes()]
 
     @app.get("/recipes/{recipe_id}")
-    async def get_recipe(recipe_id: str) -> Dict[str, Any]:
+    async def get_recipe(recipe_id: str, session: Optional[str] = None) -> Dict[str, Any]:
         r = store.get_recipe(recipe_id)
         if r is None:
             raise HTTPException(404, "no such recipe")
+        # The library holds the original. If this cook has changed the recipe for the
+        # session (a substitution, a scale), show what they will actually be cooking.
+        live = manager.sessions.get(session) if session else None
+        if live is not None and recipe_id in live.session.recipes:
+            return recipe_view(live.session, live.session.recipes[recipe_id])
         return r.to_dict()
 
     @app.post("/recipes", status_code=201)
@@ -505,7 +649,7 @@ def create_app(settings: Optional[Settings] = None, llm: Optional[LLM] = None,
     @app.delete("/session/{session_id}", status_code=204)
     async def end_session(session_id: str) -> None:
         manager.get(session_id)
-        await manager.delete(session_id)
+        await manager.delete(session_id, purge=True)
 
     @app.get("/session/{session_id}/state")
     async def session_state(session_id: str) -> Dict[str, Any]:

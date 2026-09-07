@@ -7,7 +7,7 @@
 .PARAMETER Model     Ollama model (default kitchen:gemma-q8; kitchen:gemma-qat is smaller, qwen-kitchen is the 27B)
 .PARAMETER NoVoice   Text only: skip whisper.cpp and Kokoro (faster startup, useful for testing)
 .PARAMETER Open      Open the app in the default browser once the server is up
-.PARAMETER Install   Register a Task Scheduler job that runs this script at logon, then exit
+.PARAMETER Install   Hand over to install.ps1 (full setup + logon task), then exit
 .PARAMETER Dev       Development mode: auto-restart when Python files change (implies -NoVoice unless -Voice)
 .PARAMETER Voice     With -Dev, keep the speech engines on (each restart re-warms them)
 .PARAMETER Http      Serve plain HTTP. The tablet microphone will NOT work (browsers require HTTPS)
@@ -30,17 +30,15 @@ if ($Dev -and -not $Voice) { $NoVoice = $true }
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
+. (Join-Path $root 'lib.ps1')
 
 if ($Install) {
-    $ps = (Get-Command powershell.exe).Source
-    $taskArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Minimized -File `"$root\start.ps1`" -Port $Port -Model $Model" + $(if ($NoVoice) { " -NoVoice" } else { "" })
-    $action = New-ScheduledTaskAction -Execute $ps -Argument $taskArgs -WorkingDirectory $root
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-    Register-ScheduledTask -TaskName "Kitchen Assistant" -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
-    Write-Host "Registered scheduled task 'Kitchen Assistant' (runs at logon). Remove with:"
-    Write-Host "  Unregister-ScheduledTask -TaskName 'Kitchen Assistant' -Confirm:`$false"
-    exit 0
+    # install.ps1 owns setup now: it does the dependencies, certificate, firewall and task.
+    $extra = @()
+    if ($NoVoice) { $extra += "-NoVoice" }
+    if ($Cloud) { $extra += "-Cloud" }
+    & (Join-Path $root "install.ps1") -Port $Port -Model $Model @extra
+    exit $LASTEXITCODE
 }
 
 $ollamaHost = if ($env:OLLAMA_HOST) { $env:OLLAMA_HOST -replace "^https?://", "" } else { "127.0.0.1:11434" }
@@ -134,9 +132,7 @@ if ($NoVoice) {
 # 3. Addresses. HTTPS by default: browsers only expose the microphone in a secure context,
 # so a tablet on http://<lan-ip> gets no mic at all.
 $scheme = if ($Http) { "http" } else { "https" }
-$lan = (Get-NetIPAddress -AddressFamily IPv4 |
-        Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" -and $_.PrefixOrigin -ne "WellKnown" } |
-        Sort-Object InterfaceMetric | Select-Object -First 1).IPAddress
+$lan = Get-LanAddress
 Write-Host ""
 Write-Host "  This PC:  ${scheme}://localhost:$Port/"
 if ($lan) { Write-Host "  Tablet:   ${scheme}://${lan}:$Port/" }
@@ -147,7 +143,7 @@ if ($Http) {
     Write-Host "  (Fully Kiosk: turn on ignoring SSL errors), or install ${scheme}://${lan}:$Port/cert"
 }
 Write-Host ""
-if ($Dev) { Write-Host "Dev mode: restarts on .py changes under src\ (the cooking session is lost on each restart)." }
+if ($Dev) { Write-Host "Dev mode: restarts on .py changes under src\. Sessions are snapshotted, so a cook survives the restart." }
 Write-Host "Starting (model + speech warm-up takes 20-40 s)... Ctrl+C stops it."
 
 if ($Open) {
@@ -162,10 +158,43 @@ if ($Open) {
     } -ArgumentList "${scheme}://localhost:$Port" | Out-Null
 }
 
-# 4. Serve
+# 4. Serve, supervised.
+#
+# The server cannot restart itself: once it exits there is nothing left to serve the page
+# that would bring it back. So this loop owns the lifecycle. The tablet's "Restart server"
+# button makes the process exit with 42, which means "start me again"; exit 0 means the cook
+# stopped it on purpose; anything else is a crash, which is retried with a backoff so a
+# syntax error in a source file cannot spin the CPU.
 $env:PYTHONIOENCODING = "utf-8"
 $env:PYTHONWARNINGS = "ignore"
 $serveArgs = @("serve", "--host", "0.0.0.0", "--port", $Port, "--model", $Model)
 if ($Dev) { $serveArgs += "--reload" }
 if (-not $Http) { $serveArgs += "--https" }
-uv run cooking-assistant-ai @serveArgs
+
+$RESTART_EXIT = 42
+$crashes = @()
+while ($true) {
+    uv run cooking-assistant-ai @serveArgs
+    $code = $LASTEXITCODE
+
+    if ($code -eq $RESTART_EXIT) {
+        Write-Host ""
+        Write-Host "--- restart requested from the tablet; starting again ---"
+        Write-Host ""
+        $crashes = @()
+        continue
+    }
+    if ($code -eq 0) { break }              # Ctrl+C or a clean shutdown
+    if ($Dev) { Write-Host "Server exited with $code."; break }
+
+    # Crash. Retry, but give up if it keeps failing: five times inside two minutes means
+    # the code is broken, not unlucky, and a restart loop would hide the error.
+    $crashes = @($crashes | Where-Object { $_ -gt (Get-Date).AddMinutes(-2) }) + (Get-Date)
+    if ($crashes.Count -ge 5) {
+        Write-Error "Server crashed $($crashes.Count) times in two minutes (last exit code $code). Stopping so the error is visible above."
+        exit $code
+    }
+    $wait = [Math]::Min(30, [Math]::Pow(2, $crashes.Count))
+    Write-Host "Server exited with $code; restarting in $wait s (crash $($crashes.Count) of 5)..."
+    Start-Sleep -Seconds $wait
+}

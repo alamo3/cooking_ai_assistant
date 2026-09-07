@@ -172,9 +172,12 @@ def render_meal_options(store: Store, meals: Optional[int] = None, scale: float 
         lines.append(f"NOT ALLOWED on a {diet} diet, do not recommend these ({len(banned)}):")
         lines.extend(f"  {m.recipe.title} [{m.recipe.id}] - {m.diet_note}" for m in banned)
     lines.append("")
-    lines.append("Recommend a set of recipes, say how many portions it makes, and if a recipe "
-                 "needs one or two easy extras say what to buy. Do not suggest anything needing "
-                 "a long or unreasonable shopping list.")
+    lines.append("Recommend a set of meals and say how many portions it makes. You are not "
+                 "limited to the list above: invent dishes around what is in stock and save each "
+                 "one with create_recipe, which adds it to the library permanently. A dish may "
+                 "need one or two easy things from the shop; never propose a long shopping list. "
+                 "Once the cook agrees, call create_recipe for anything new, then shopping_list "
+                 "for what they must buy.")
     if banned:
         lines.append(f"Never recommend anything from the not-allowed list. You may suggest a "
                      f"{diet} substitution for one if it genuinely works, and say what you changed.")

@@ -240,6 +240,12 @@
       $("#conn-dot").className = "dot ok";
       $("#conn-text").textContent = "connected";
       setPhase("idle");
+      if (app.restarting) {                 // the supervisor gave us a fresh process
+        app.restarting = false;
+        toast("Server restarted");
+        loadHealth();
+      }
+      loadServerStatus();
       document.dispatchEvent(new Event("ws-open"));
     };
     ws.onmessage = (ev) => {
@@ -249,7 +255,7 @@
     };
     ws.onclose = () => {
       $("#conn-dot").className = "dot";
-      $("#conn-text").textContent = "reconnecting";
+      $("#conn-text").textContent = app.restarting ? "restarting" : "reconnecting";
       setPhase("offline");
       setTimeout(connect, app.reconnectDelay);
       app.reconnectDelay = Math.min(10000, app.reconnectDelay * 1.6);
@@ -284,11 +290,22 @@
         if (!app.bubble) app.bubble = addBubble("assistant" + (msg.proactive ? " proactive" : ""), "");
         app.bubble.textContent += msg.text;
         scrollConversation();
+        if (app.suggesting) {
+          const out = $("#suggest-out");
+          if (out.classList.contains("waiting")) { out.className = "suggest-out"; out.textContent = ""; }
+          out.textContent += msg.text;
+        }
         break;
       case "audio":
         try { player.enqueue(msg.data, msg.sample_rate); } catch (e) { console.warn("audio", e); }
         break;
       case "speech_end":
+        if (app.suggesting) {
+          const out = $("#suggest-out");
+          if (msg.text) { out.className = "suggest-out"; out.textContent = msg.text; }
+          app.suggesting = false;
+          renderChoices();   // the model may have loaded recipes; refresh the ticks
+        }
         app.speaking = false;
         if (app.bubble && !app.bubble.textContent && msg.text) app.bubble.textContent = msg.text;
         if (app.bubble && !app.bubble.textContent) app.bubble.remove();
@@ -502,6 +519,7 @@
       const ul = el("ul");
       for (const st of r.steps) {
         const li = el("li", st.status === "done" ? "done" : st.status === "skipped" ? "skipped" : st.n === r.current_step ? "current" : "", `${st.n}. ${st.text}`);
+        if (st.substituted) li.appendChild(el("span", "sub", " (swapped)"));
         ul.appendChild(li);
       }
       det.appendChild(ul);
@@ -543,7 +561,7 @@
     const box = $("#timeline");
     box.innerHTML = "";
     if (!tl.tasks.length) {
-      box.appendChild(el("div", "empty", "No plan yet. Say when you want to eat."));
+      box.appendChild(el("div", "empty", "No plan yet. Pick recipes on the Recipes tab."));
     } else {
       const table = el("table");
       const head = el("tr");
@@ -625,11 +643,15 @@
         if (!det.open || det.dataset.loaded) return;
         det.dataset.loaded = "1";
         try {
-          const full = await api("GET", `/recipes/${r.id}`);
+          const full = await api("GET", `/recipes/${r.id}` + (app.sessionId ? `?session=${app.sessionId}` : ""));
           det.innerHTML = "";
           det.appendChild(el("summary", null, "Ingredients and steps"));
           const ul = el("ul");
-          for (const i of full.ingredients) ul.appendChild(el("li", null, `${i.amount % 1 ? i.amount.toFixed(2) : i.amount}${i.unit ? " " + i.unit : ""} ${i.name}`));
+          for (const i of full.ingredients) {
+            const li = el("li", null, i.text || `${i.amount % 1 ? i.amount.toFixed(2) : i.amount}${i.unit ? " " + i.unit : ""} ${i.name}`);
+            if (i.substituted_for) li.appendChild(el("span", "sub", ` (instead of ${i.substituted_for})`));
+            ul.appendChild(li);
+          }
           det.appendChild(ul);
           const ol = el("ol");
           for (const s of full.steps) ol.appendChild(el("li", null, s.text));
@@ -669,8 +691,24 @@
       updateStartButton();
     }
   }
+  // Ask for suggestions without leaving the Recipes screen: the answer streams in here as
+  // well as into the Cook conversation, so picking recipes and asking about them are one flow.
+  function askForSuggestions(e) {
+    if (e) e.preventDefault();
+    const n = Number($("#suggest-meals").value) || 8;
+    const out = $("#suggest-out");
+    out.hidden = false;
+    out.className = "suggest-out waiting";
+    out.textContent = "Thinking about what you can make…";
+    app.suggesting = true;
+    player.ensure();
+    send({ type: "text", text: `I want to batch cook about ${n} portions this week. Looking at what's in my pantry, what should I make?` });
+    setPhase("thinking");
+  }
+
   function bindRecipes() {
     $("#btn-start-cooking").addEventListener("click", startCooking);
+    $("#suggest-form").addEventListener("submit", askForSuggestions);
     $("#plating-on").addEventListener("change", (e) => { $("#plating-time").disabled = !e.target.checked; });
     $("#diet-select").addEventListener("change", async (e) => {
       try {
@@ -924,11 +962,98 @@
     if (app.state && app.state.timers.length) renderTimers();
   }
 
+
+  // ------------------------------------------------------------ server panel
+  // The server cannot restart itself, so this asks the supervisor (start.ps1) for a fresh
+  // process. The websocket below reconnects on its own once it comes back.
+  let serverStatus = null;
+
+  function fmtUptime(s) {
+    if (s == null) return "-";
+    if (s < 90) return Math.round(s) + "s";
+    if (s < 5400) return Math.round(s / 60) + "m";
+    const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+    return h + "h " + m + "m";
+  }
+
+  async function loadServerStatus() {
+    try {
+      serverStatus = await api("GET", "/admin/status");
+    } catch (e) { return; }  // server down; the reconnect loop is already on it
+    $("#server-badge").hidden = !serverStatus.code_changed;
+    if (!$("#server-panel").hidden) renderServerPanel();
+  }
+
+  function renderServerPanel() {
+    const s = serverStatus;
+    if (!s) return;
+    $("#srv-uptime").textContent = fmtUptime(s.uptime_s);
+    $("#srv-model").textContent = s.model || "-";
+    $("#srv-backend").textContent = s.backend || "-";
+
+    const changed = $("#srv-changed");
+    changed.hidden = !s.code_changed;
+    if (s.code_changed) {
+      changed.innerHTML = "";
+      const n = s.changed_count;
+      changed.appendChild(el("div", null, `Code changed since this server started (${n} file${n === 1 ? "" : "s"}). Restart to load it.`));
+      const ul = el("ul");
+      for (const f of s.changed_files.slice(0, 6)) ul.appendChild(el("li", null, f));
+      if (n > 6) ul.appendChild(el("li", null, `and ${n - 6} more`));
+      changed.appendChild(ul);
+    }
+
+    const warn = $("#srv-warn");
+    const active = (s.active_sessions || []).length;
+    if (!s.can_restart) {
+      warn.hidden = false;
+      warn.textContent = "This server was started without the supervisor, so it cannot restart itself. Use start.ps1.";
+    } else if (active) {
+      warn.hidden = false;
+      warn.textContent = `${active} cooking session${active === 1 ? "" : "s"} in progress. Restarting loses their timers and progress.`;
+    } else {
+      warn.hidden = true;
+    }
+    $("#srv-restart").disabled = !s.can_restart;
+  }
+
+  function toggleServerPanel(show) {
+    const panel = $("#server-panel");
+    const open = show === undefined ? panel.hidden : show;
+    panel.hidden = !open;
+    if (open) { loadServerStatus(); renderServerPanel(); }
+  }
+
+  async function restartServer() {
+    const active = ((serverStatus && serverStatus.active_sessions) || []).length;
+    if (active && !confirm(`${active} cooking session${active === 1 ? "" : "s"} in progress.\nRestarting loses their timers, tasks and progress. Restart anyway?`)) return;
+    const btn = $("#srv-restart");
+    btn.disabled = true;
+    btn.textContent = "Restarting...";
+    try {
+      await api("POST", "/admin/restart", { force: active > 0 });
+      toggleServerPanel(false);
+      toast("Restarting the server...");
+      app.restarting = true;
+      $("#conn-text").textContent = "restarting";
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Restart server";
+    }
+  }
+
   // ------------------------------------------------------------ boot
   bindUi();
+  $("#server-chip").onclick = () => toggleServerPanel();
+  $("#srv-close").onclick = () => toggleServerPanel(false);
+  $("#srv-restart").onclick = restartServer;
   loadHealth();
+  loadServerStatus();
   connect();
   tick();
   setInterval(tick, 1000);
   setInterval(loadHealth, 30000);
+  setInterval(loadServerStatus, 15000);
 })();

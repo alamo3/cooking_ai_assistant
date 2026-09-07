@@ -26,7 +26,7 @@ from cooking_assistant_ai.core.render import (
     render_timeline,
     render_timers,
 )
-from cooking_assistant_ai.model.types import Session, Step, Substitution, Task, Timer
+from cooking_assistant_ai.model.types import Recipe, Session, Step, Substitution, Task, Timer
 from cooking_assistant_ai.storage.db import Store
 
 
@@ -722,7 +722,9 @@ def _ingredient(recipe, ref: str):
 
 @tool(
     "substitute",
-    "Replace an ingredient in a loaded recipe (by id or name).",
+    "Replace an ingredient in a loaded recipe (by id or name). This edits the saved recipe "
+    "for good, so the cook will get the replacement next time too; pass at_step to change "
+    "one step only, which lasts just for this cook.",
     _params({
         "recipe_id": {"type": "string"},
         "ingredient_id": {"type": "string", "description": "ingredient id or name"},
@@ -739,8 +741,22 @@ def substitute(ctx: ToolContext, recipe_id: Any = None, ingredient_id: Any = Non
     step = _step_id(ctx, str(at_step), recipe) if at_step else None
     ov = ctx.session.overlays[recipe.id]
     ov.substitutions = [x for x in ov.substitutions if x.ingredient_id != ing.id]
-    ov.substitutions.append(Substitution(ingredient_id=ing.id, replacement=rep, note=_str(note, "note"), at_step=step))
-    return f"recipe:{recipe.id}", f"{ing.name} -> {rep} in {recipe.title}"
+
+    from cooking_assistant_ai.core.plan import apply_substitution
+
+    original = ""
+    if step is None:
+        # A whole-recipe swap is a real edit: rename the ingredient, reword every step that
+        # named it, and save. The session gets the same recipe object so later calls resolve
+        # the new name ("actually, ghee instead of the olive oil").
+        edited = apply_substitution(recipe, ing.id, rep)
+        ctx.store.put_recipe(edited)
+        ctx.session.recipes[recipe.id] = edited
+        original = ing.name
+    ov.substitutions.append(Substitution(ingredient_id=ing.id, replacement=rep, note=_str(note, "note"),
+                                         at_step=step, original=original))
+    where = " for this step only" if step else ", saved to the recipe"
+    return f"recipe:{recipe.id}", f"{ing.name} -> {rep} in {recipe.title}{where}"
 
 
 @tool(
@@ -819,6 +835,95 @@ def _inventory_text(ctx: ToolContext) -> str:
     if not items:
         return "INVENTORY\nempty"
     return "INVENTORY\n" + "\n".join(f"{fmt_ingredient(i['name'], i['amount'], i['unit'])}" for i in items)
+
+
+@tool(
+    "create_recipe",
+    "Invent a new recipe and save it to the library permanently. Use this when the cook asks "
+    "for something to cook that is not already stored. Build it around what the pantry has; "
+    "at most one or two easy things they would have to buy. Give every step a duration, and "
+    "an appliance and temperature when it is on the heat, or the plan cannot schedule it.",
+    _params({
+        "title": {"type": "string"},
+        "servings": {"type": "integer"},
+        "ingredients": {
+            "type": "array",
+            "items": {"type": "object", "properties": {
+                "name": {"type": "string"},
+                "amount": {"type": "number"},
+                "unit": {"type": "string", "description": "g, ml, cup, tbsp, tsp, clove... omit for countable"},
+            }, "required": ["name", "amount"]},
+        },
+        "steps": {
+            "type": "array",
+            "items": {"type": "object", "properties": {
+                "text": {"type": "string"},
+                "duration_s": {"type": "integer", "description": "seconds this step takes"},
+                "appliance": {"type": "string", "description": "oven | stovetop | air_fryer | grill, omit if off the heat"},
+                "temp_f": {"type": "integer"},
+                "uses": {"type": "array", "items": {"type": "string"},
+                         "description": "ingredient names this step uses, for shared-prep grouping"},
+            }, "required": ["text"]},
+        },
+    }, ["title", "ingredients", "steps"]),
+)
+def create_recipe(ctx: ToolContext, title: Any = None, servings: Any = None,
+                  ingredients: Any = None, steps: Any = None) -> Tuple[str, Optional[str]]:
+    from cooking_assistant_ai.core.diet import check_ingredient
+
+    name = _str(title, "title", required=True) or ""
+    raw_ings = _list(ingredients, "ingredients")
+    raw_steps = _list(steps, "steps")
+    if len(raw_ings) < 2:
+        raise ToolError("a recipe needs at least 2 ingredients")
+    if len(raw_steps) < 2:
+        raise ToolError("a recipe needs at least 2 steps")
+
+    rid = ctx.store.next_recipe_id()
+    diet = ctx.store.diet
+    ing_rows, by_name = [], {}
+    for n, raw in enumerate(raw_ings, start=1):
+        if isinstance(raw, str):
+            raw = {"name": raw, "amount": 1}
+        iname = _str(raw.get("name"), "ingredient name", required=True) or ""
+        bad = check_ingredient(iname, diet)
+        if bad is not None and bad.severity == "excluded":
+            raise ToolError(f"cannot save '{name}': {bad.reason}. This kitchen is {diet}; "
+                            f"invent something without {bad.term}.")
+        iid = f"{rid}-i{n}"
+        ing_rows.append({"id": iid, "name": iname,
+                         "amount": _float(raw.get("amount"), "amount") or 1.0,
+                         "unit": _str(raw.get("unit"), "unit")})
+        by_name[iname.lower()] = iid
+
+    step_rows = []
+    for n, raw in enumerate(raw_steps, start=1):
+        if isinstance(raw, str):
+            raw = {"text": raw}
+        uses = []
+        for ref in _list(raw.get("uses"), "uses"):
+            key = str(ref).strip().lower()
+            match = by_name.get(key) or next((v for k, v in by_name.items() if key and key in k), None)
+            if match:
+                uses.append(match)
+        step_rows.append({
+            "id": f"{rid}-s{n}",
+            "text": _str(raw.get("text"), "step text", required=True) or "",
+            "duration_s": _int(raw.get("duration_s"), "duration_s"),
+            "appliance": scheduler.normalize_appliance(_str(raw.get("appliance"), "appliance")),
+            "temp_f": _int(raw.get("temp_f"), "temp_f") or None,
+            "ingredient_ids": uses,
+        })
+
+    try:
+        recipe = Recipe.from_dict({"id": rid, "title": name,
+                                   "servings": _int(servings, "servings") or 4,
+                                   "ingredients": ing_rows, "steps": step_rows})
+    except (KeyError, TypeError, ValueError) as e:
+        raise ToolError(f"could not build the recipe: {e}")
+    ctx.store.put_recipe(recipe)
+    ctx.session.add_recipe(recipe)  # available to cook straight away
+    return f"recipe:{rid}", f"saved '{recipe.title}' ({rid}) to the library and loaded it"
 
 
 @tool(

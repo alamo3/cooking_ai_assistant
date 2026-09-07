@@ -7,7 +7,7 @@ stored, so it can never drift from the state the tools maintain.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -59,6 +59,62 @@ def ingredient_key(name: str) -> str:
     words = [_singular(w) for w in words]
     key = " ".join(words).strip()
     return _ALIASES.get(key, key)
+
+
+def _sub_pattern(name: str) -> Optional[re.Pattern]:
+    """Match an ingredient's head name inside step text ('garlic cloves, smashed' -> garlic clove/cloves)."""
+    head = re.split(r",|\(", name, maxsplit=1)[0].strip()
+    words = re.findall(r"[A-Za-z][A-Za-z-]*", head)
+    if not words:
+        return None
+    parts = [re.escape(w) for w in words]
+    parts[-1] = re.escape(_singular(words[-1])) + r"e?s?"  # match singular and plural alike
+    return re.compile(r"\b" + r"\s+".join(parts) + r"\b", re.I)
+
+
+def rename_in_text(text: str, name: str, replacement: str) -> str:
+    """Swap one ingredient name for another inside a sentence of instructions."""
+    pattern = _sub_pattern(name)
+    return pattern.sub(replacement, text) if pattern is not None else text
+
+
+def mentions_ingredient(text: str, name: str) -> bool:
+    pattern = _sub_pattern(name)
+    return bool(pattern is not None and pattern.search(text))
+
+
+def apply_substitution(recipe: Recipe, ingredient_id: str, replacement: str) -> Recipe:
+    """A copy of the recipe with the swap baked in: the ingredient renamed and every step
+    that named it reworded. Ids are untouched, so tasks, timers and completed steps still
+    point at the same things."""
+    ing = recipe.ingredient(ingredient_id)
+    if ing is None:
+        return recipe
+    return replace(
+        recipe,
+        ingredients=tuple(replace(i, name=replacement) if i.id == ingredient_id else i
+                          for i in recipe.ingredients),
+        steps=tuple(replace(s, text=rename_in_text(s.text, ing.name, replacement))
+                    for s in recipe.steps),
+    )
+
+
+def substitute_text(text: str, recipe: Recipe, overlay, step_id: Optional[str] = None) -> str:
+    """Rewrite substituted ingredient names inside a step's text.
+
+    Without this the ingredient list says olive oil while the instruction the cook reads
+    (and the assistant speaks) still says butter, so a substitution looks like it did nothing.
+    A whole-recipe swap is written into the recipe itself, so this only has work to do for
+    one pinned to a single step; the rest is a no-op safety net.
+    """
+    for sub in overlay.substitutions:
+        if sub.at_step and step_id is not None and sub.at_step != step_id:
+            continue
+        ing = recipe.ingredient(sub.ingredient_id)
+        if ing is None or ing.name.lower() == sub.replacement.lower():
+            continue  # already baked into the recipe
+        text = rename_in_text(text, ing.name, sub.replacement)
+    return text
 
 
 _PREP_VERBS = re.compile(
@@ -244,7 +300,7 @@ def build_plan(session: Session, now: datetime) -> Plan:
         if appliance and task and task.appliance and appliance.split(":")[0] == task.appliance.split(":")[0]:
             appliance = task.appliance  # the step said "stovetop"; the task knows which burner
         return PlanItem(
-            kind="step", id=s.id, text=s.text, status=status or step_status(r, s, task),
+            kind="step", id=s.id, text=substitute_text(s.text, r, ov, s.id), status=status or step_status(r, s, task),
             recipe_id=r.id, recipe_title=r.title, step_n=r.step_index(s.id) if r.step_index(s.id) > 0 else None,
             at=at, duration_s=s.duration_s, appliance=appliance,
             temp_f=s.temp_f or (task.temp_f if task and appliance else None), task_id=task.id if task else None,

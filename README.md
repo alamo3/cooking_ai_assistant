@@ -55,7 +55,89 @@ src/cooking_assistant_ai/
   web/        tablet kiosk app (index.html, app.js, app.css)
   cli.py      terminal REPL (Phase 1 without a model, Phase 2 with one)
 evals/        plan_bench.py (planning) and messy_bench.py (recovery), both need a live model
-tests/        112 tests, no model needed (plus an opt-in speech round trip)
+tests/        121 tests, no model needed (plus an opt-in speech round trip)
+```
+
+## Install (Windows)
+
+```powershell
+.\install.ps1              # or -Cloud for OpenRouter, -WhatIfOnly to see what it would do
+```
+
+One idempotent script: installs dependencies, checks Ollama and the speech builds, generates
+the TLS certificate, opens the port on private networks, seeds `cooking.db`, and registers a
+**logon task** so the assistant is already running when you walk into the kitchen. Re-run it
+after pulling changes; `.\install.ps1 -Uninstall` removes the task and firewall rule and
+leaves your code, venv and database alone.
+
+It registers a logon task rather than a Windows service on purpose: Ollama runs as a tray app
+in your user session and the GPU is only reachable from there, so a session-0 service could
+talk to neither. The cost is that it starts at logon, not at boot — enable Windows'
+automatic sign-in if you want it up before anyone touches the machine.
+
+The address it prints is the one a tablet on your network can actually reach.
+Sorting interfaces by metric picks the wrong one when a VPN is connected — Surfshark,
+Tailscale and friends own the default route — so [lib.ps1](lib.ps1) drops tunnel and virtual
+adapters by name and prefers ordinary home ranges, `192.168/16` first.
+
+The firewall rule needs an elevated shell. Without one the install still succeeds and tells
+you the single command to run as admin; until then the tablet cannot reach the server.
+
+## Restarting from the tablet
+
+The gear in the top right opens a server panel: uptime, model, backend, a **Restart server**
+button, and an amber dot when source files have changed since the process started (it lists
+which ones). That is the supported way to pick up a code change.
+
+A process cannot restart itself — once it exits nothing is left to serve the page that would
+bring it back — so the lifecycle belongs to the supervisor loop at the bottom of `start.ps1`.
+[admin.py](src/cooking_assistant_ai/api/admin.py) only decides how the process ends:
+
+| exit code | meaning | supervisor |
+|---|---|---|
+| 42 | restart requested | relaunch immediately |
+| 0 | Ctrl+C, clean stop | stop |
+| anything else | crash | relaunch with backoff, giving up after 5 crashes in 2 minutes |
+
+The tablet's websocket reconnects on its own, so a restart shows up as a couple of seconds of
+"restarting" and then "Server restarted".
+
+**A restart throws away every cooking session** — timers, tasks and progress are all in
+memory. `/admin/restart` returns 409 if a cook is in progress and the UI makes you confirm;
+only `force: true` gets past it.
+
+`--reload` (that is, `start.ps1 -Dev`) is separate: uvicorn's own reloader owns the process
+tree there and picks up file changes by itself, so the restart button reports itself
+unavailable.
+
+## Surviving a crash or a power cut
+
+The cooking session — the plan, the timers, what has been done, what was said — was the only
+state not in the database, and losing it mid-cook is the worst failure this system has. It is
+now snapshotted to a `sessions` table: after every state-changing tool call, on a timer
+(`COOK_AUTOSAVE`, default 10 s), and on clean shutdown. Startup restores anything younger
+than `COOK_SESSION_MAX_AGE` (default 12 h) under its original session id, so the tablet's
+reconnect lands back in the same cook without doing anything.
+
+This does not make the database a second source of truth (spec 1.5). Snapshots are write-only
+while the server runs and read only at startup; the live `Session` always wins.
+
+Two things that make restoring correct rather than merely possible, both in
+[sessions.py](src/cooking_assistant_ai/storage/sessions.py):
+
+- **Id counters are rebuilt from the ids in use.** They are iterators and cannot be
+  serialized, and a fresh counter would hand out `t_001` again and overwrite the first task
+  of the cook.
+- **Timers that ran out while the power was off are retired, not fired.** Otherwise every one
+  of them goes off at once on startup. They are marked fired and a session note says which
+  finished unannounced and how long the server was down, so the assistant can mention it.
+
+Recipes are stored in full in the snapshot rather than by id, so a session restores intact
+even if the recipe was edited or deleted while the server was down. Ending a session with
+`DELETE /session/{id}` drops its snapshot; a crash does not, which is the whole point.
+
+```
+Recovered the cook from 2:39 PM: Roast Chicken Thighs (1 timer finished while it was down)
 ```
 
 ## Run
@@ -82,14 +164,17 @@ uv run cooking-assistant-ai repl --model kitchen:gemma-q8 --load r001 r002
 # Server (HTTPS + websocket on :8000), with voice in and out
 COOK_STT=whisper.cpp COOK_TTS=kokoro uv run cooking-assistant-ai serve --https --model kitchen:gemma-q8
 
-# or, on Windows, the start script (HTTPS by default; -Open launches the browser)
+# or, on Windows, the start script (HTTPS by default; -Open launches the browser).
+# This is the supervisor: it is what makes the tablet's restart button work.
 .\start.ps1 -Open
 ```
 
 Environment: `COOK_MODEL` (default `kitchen:gemma-q8`), `COOK_NUM_CTX` (default 16384, sent
 with every request; the Modelfile carries the same value), `COOK_KEEP_ALIVE`
 (default `30m` idle before Ollama frees the VRAM; `-1` pins it forever),
-`COOK_DB` (default `cooking.db`),
+`COOK_DB` (default `cooking.db`), `COOK_AUTOSAVE` seconds between session
+snapshots (default 10, `0` disables), `COOK_SESSION_MAX_AGE` seconds a snapshot stays
+resumable (default 43200),
 `COOK_STT` (`whisper.cpp` | `faster-whisper` | `none`), `COOK_TTS=kokoro`
 (`COOK_TTS_VOICE`, default `af_heart`), `COOK_IDLE_INTERVAL` seconds, `COOK_WARM=0` to skip
 warm-up of the model and speech engines at startup.
@@ -111,6 +196,8 @@ vocabulary hints. faster-whisper settings: `COOK_WHISPER_MODEL`, `COOK_WHISPER_D
 - **From pasted text**: some sites (Allrecipes, for one) refuse non-browser requests.
   Copy the recipe from your browser and `POST /recipes` with `{"text": "..."}`; the same
   extraction runs on it.
+- **Invented by the assistant**: ask for something new and it composes a dish from your pantry
+  and saves it with `create_recipe`. See "Meal planning from the pantry" below.
 - **By hand**: `POST /recipes` with the JSON shape returned by `GET /recipes/{id}`
   (`title`, `servings`, `ingredients[{name, amount, unit}]`, `steps[{text, duration_s, appliance, temp_f}]`).
 - **Remove**: `DELETE /recipes/{id}`.
@@ -122,6 +209,8 @@ JS, no build step). Open it in a kiosk browser on the tablet.
 
 - **Recipes screen** (where a fresh session starts): set the diet, tick every recipe you're
   cooking and tap "Start cooking". Recipes the diet forbids are dimmed and cannot be ticked.
+  "Suggest meals for N portions" asks the model what to cook from what is in the pantry and
+  shows the answer inline, so you never have to leave the screen to ask.
   There is no serving deadline unless you tick "serving at a set time". The
   server loads the whole selection and hands the model one planning turn: it builds all the tasks,
   then briefs you out loud from a code-computed summary (how long, when to start, which
@@ -129,10 +218,18 @@ JS, no build step). Open it in a kiosk browser on the tablet.
   thing to do. Adding a recipe later re-runs the same flow and only extends the plan. Import
   from a URL and delete from the library live here too.
 - **Cook screen**: the merged plan (NOW card, "Then:", full list) with recipe cards
-  collapsed beneath; the assistant avatar with its state (ready, listening, thinking,
-  speaking, heads up for unprompted speech); the conversation with tool-call chips; timers
+  collapsed beneath; the chef avatar; the conversation with tool-call chips; timers
   with live countdowns and cancel; the timeline with next action and conflicts; a
   proactivity slider. Hold the big button (or the space bar) to talk, or type.
+
+**The avatar** is an inline SVG chef (toque, face, steam) rather than an emoji, animated
+purely in CSS off one attribute: the JS only ever sets `#avatar[data-state]`, so the drawing
+can change freely without touching behaviour. Each state is visually distinct at a glance
+from across a kitchen: *listening* breathes a blue halo and raises the brows, *thinking*
+spins an amber arc and lifts steam, *speaking* and *heads up* animate the mouth (heads up
+also pulses amber and nudges, so unprompted speech is obvious), *problem* frowns, *offline*
+goes grey. The palette is warm charcoal and amber rather than the usual blue-grey dashboard,
+since the thing lives in a kitchen.
 - **Pantry screen**: inventory with +/- adjustments, inline amount edits, add and remove.
 
 **The tablet needs HTTPS.** Browsers expose `navigator.mediaDevices` only in a secure
@@ -447,6 +544,23 @@ counts as in stock rather than guessing at a conversion.
 `shopping_list(recipe_ids, scale)` turns a chosen set into what to buy, subtracting stock and
 merging duplicates across recipes. `GET /meal-options?meals=N` returns the same data as JSON.
 
+Ask for suggestions three ways: the "Suggest meals for N portions" box on the Recipes screen,
+the chat box or voice on the Cook screen, or `suggest_meals` directly.
+
+**The assistant is not limited to the stored library: it can invent recipes.** `create_recipe`
+composes a dish around what the pantry holds and saves it permanently, so it appears on the
+Recipes screen and is cookable like any other. Ask for "two brand new dishes from what's in my
+pantry" and it will propose them, and on your approval save them and tell you what to buy.
+
+Three things are enforced in code rather than trusted to the model. The **diet** is checked at
+creation, so a chicken dish in a vegan kitchen is refused with "chicken is not vegan; invent
+something without chicken" and nothing is written. Every step is pushed to carry a **duration,
+and an appliance and temperature when it is on the heat**, or the merged plan could not
+schedule it. And a step's `uses` list is resolved to real ingredient ids, so an invented recipe
+joins the shared **mise en place** grouping like a seed one. Recipes thinner than two
+ingredients or two steps are rejected, and bare strings are accepted for both, since models
+often send `["bread", "butter"]` rather than objects.
+
 ## Scheduling semantics the model is told about
 
 - Everything starts as soon as it can: now, or when the tasks it comes `after` end.
@@ -479,6 +593,28 @@ trim, and so on, matched after normalizing names such as "garlic cloves, smashed
 "Garlic: 4 (chicken) + 2 (beans) = 6 total". Salt, pepper, oil and water are never grouped.
 Completing a group (`complete_prep` by voice, or the card's button) marks the matching step
 in every recipe done.
+
+## Changes to a recipe mid-cook
+
+`substitute` is a **permanent edit**. It renames the ingredient and rewords every step that
+named it, saves the result with `put_recipe`, and swaps the session's copy for the edited
+one — so "butter -> olive oil" is what the recipe says next week too. Ids are preserved, so
+running tasks, timers and completed steps still point at the same steps, and a follow-up
+swap resolves the new name ("actually, ghee instead of the olive oil"). The model is told
+the change is permanent and says so.
+
+Matching is deliberately conservative: the ingredient's head name before any comma, on word
+boundaries, singular or plural. "butter" -> "olive oil" rewrites "melt the butter" and
+leaves "buttermilk" alone.
+
+Pass `at_step` for a one-off: only that step is reworded, it lives in the session overlay
+and the saved recipe is untouched. `scale`, `skip_step`, `add_step` and `add_note` stay
+session-only the same way.
+
+Whichever kind, the change shows up on every surface the cook uses — the COOK PLAN "NOW"
+line, what the assistant reads aloud, the recipe block the model sees, and the tablet's step
+list (badged "swapped", with "(instead of butter)" beside the ingredient for as long as the
+session that made the swap lasts).
 
 ## Speech
 

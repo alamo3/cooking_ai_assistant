@@ -117,6 +117,9 @@ class Substitution:
     replacement: str
     note: Optional[str] = None
     at_step: Optional[str] = None
+    # What the ingredient was called before the swap. Set when the swap has already been
+    # written into the recipe, so "(instead of butter)" still has something to show.
+    original: str = ""
 
 
 @dataclass

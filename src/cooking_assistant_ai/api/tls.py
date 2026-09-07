@@ -47,6 +47,31 @@ def local_addresses() -> List[str]:
     return sorted(addrs)
 
 
+def _rank(addr: str) -> int:
+    """Prefer the network a tablet in the house is actually on.
+
+    A VPN (Surfshark, Tailscale, WireGuard) usually owns the default route, so the address
+    used for outbound traffic can be a tunnel that no device on the LAN can reach. 10/8 and
+    172.16/12 are legitimate private ranges but are also what tunnels hand out, so an
+    ordinary 192.168 home network wins.
+    """
+    if addr.startswith("192.168."):
+        return 0
+    if addr.startswith("172."):
+        second = addr.split(".")[1] if "." in addr[4:] else "0"
+        return 1 if second.isdigit() and 16 <= int(second) <= 31 else 3
+    if addr.startswith("10."):
+        return 2
+    return 3
+
+
+def lan_addresses() -> List[str]:
+    """Addresses worth showing to the cook, best first. Loopback and link-local dropped."""
+    usable = [a for a in local_addresses()
+              if not a.startswith("127.") and not a.startswith("169.254.")]
+    return sorted(usable, key=lambda a: (_rank(a), a))
+
+
 def _matches(cert_path: Path, hosts: List[str], ips: List[str]) -> bool:
     from cryptography import x509
     from cryptography.hazmat.primitives.serialization import Encoding  # noqa: F401

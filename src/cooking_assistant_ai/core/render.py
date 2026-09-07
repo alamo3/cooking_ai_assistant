@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from cooking_assistant_ai.core import scheduler
 from cooking_assistant_ai.core.fmt import fmt_dur, fmt_ingredient, fmt_time, fmt_window
+from cooking_assistant_ai.core.plan import mentions_ingredient, substitute_text
 from cooking_assistant_ai.model.types import Overlay, Recipe, Session, Step, Task
 
 
@@ -40,7 +41,8 @@ def render_recipe(recipe: Recipe, overlay: Optional[Overlay] = None,
         sub = subs.get(ing.id)
         if sub:
             base = fmt_ingredient(sub.replacement, ing.amount * scale, ing.unit)
-            extra = f" (instead of {ing.name}" + (f", {sub.note}" if sub.note else "") + ")"
+            was = sub.original or ing.name
+            extra = f" (instead of {was}" + (f", {sub.note}" if sub.note else "") + ")"
             lines.append(f"  - {base}{extra}  [{ing.id}]")
         else:
             lines.append(f"  - {fmt_ingredient(ing.name, ing.amount * scale, ing.unit)}  [{ing.id}]")
@@ -52,7 +54,8 @@ def render_recipe(recipe: Recipe, overlay: Optional[Overlay] = None,
             mark = "[skipped]"
         else:
             mark = "[    ]"
-        lines.append(f"  {n:>2}. {mark} {s.text}{_step_detail(s)}  [{s.id}]")
+        text = substitute_text(s.text, recipe, overlay, s.id)
+        lines.append(f"  {n:>2}. {mark} {text}{_step_detail(s)}  [{s.id}]")
         note = overlay.step_notes.get(s.id)
         if note:
             lines.append(f"        note: {note}")
@@ -74,7 +77,7 @@ def render_changes(recipe: Recipe, overlay: Overlay) -> str:
         items.append(f"scaled x{overlay.scale_factor:g}")
     for sub in overlay.substitutions:
         ing = recipe.ingredient(sub.ingredient_id)
-        name = ing.name if ing else sub.ingredient_id
+        name = sub.original or (ing.name if ing else sub.ingredient_id)
         where = ""
         if sub.at_step:
             idx = recipe.step_index(sub.at_step)
@@ -278,7 +281,7 @@ def state_dict(session: Session, now: datetime) -> Dict[str, Any]:
             for t in session.timers.values() if t.status == "running"
         ],
         "progress": {
-            "recipes": [_recipe_dict(session, r) for r in session.recipes.values()],
+            "recipes": [recipe_view(session, r) for r in session.recipes.values()],
             "notes": list(session.notes),
             "text": render_progress(session),
         },
@@ -286,7 +289,7 @@ def state_dict(session: Session, now: datetime) -> Dict[str, Any]:
     }
 
 
-def _recipe_dict(session: Session, r: Recipe) -> Dict[str, Any]:
+def recipe_view(session: Session, r: Recipe) -> Dict[str, Any]:
     """Structured recipe view with the overlay applied, for the tablet UI."""
     ov = session.overlays[r.id]
     subs = {s.ingredient_id: s for s in ov.substitutions}
@@ -298,7 +301,8 @@ def _recipe_dict(session: Session, r: Recipe) -> Dict[str, Any]:
         ingredients.append({
             "id": ing.id, "name": name, "amount": ing.amount * scale, "unit": ing.unit,
             "text": fmt_ingredient(name, ing.amount * scale, ing.unit),
-            "substituted_for": ing.name if sub else None, "note": sub.note if sub else None,
+            "substituted_for": (sub.original or ing.name) if sub else None,
+            "note": sub.note if sub else None,
         })
     steps = []
     current = None
@@ -311,11 +315,17 @@ def _recipe_dict(session: Session, r: Recipe) -> Dict[str, Any]:
             status = "pending"
             if current is None:
                 current = n
+        added = n > len(r.steps)
+        text = s.text if added else substitute_text(s.text, r, ov, s.id)
+        # Flag a step whose wording came out of a swap the cook made, so the UI can badge it.
+        subbed = not added and any(
+            sub.at_step in (None, s.id) and mentions_ingredient(text, sub.replacement)
+            for sub in ov.substitutions)
         steps.append({
-            "id": s.id, "n": n, "text": s.text, "status": status,
+            "id": s.id, "n": n, "text": text, "substituted": subbed, "status": status,
             "duration_s": s.duration_s, "appliance": s.appliance, "temp_f": s.temp_f,
             "note": ov.step_notes.get(s.id), "skip_reason": ov.skip_reasons.get(s.id),
-            "added": n > len(r.steps),
+            "added": added,
         })
     servings = r.servings * scale
     return {
