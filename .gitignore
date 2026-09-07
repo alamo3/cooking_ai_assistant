@@ -7,5 +7,3 @@ __pycache__/
 *.egg-info/
 dist/
 
-# Third-party checkout with build artifacts (~1 GB); build it locally per the README
-whisper.cpp/
