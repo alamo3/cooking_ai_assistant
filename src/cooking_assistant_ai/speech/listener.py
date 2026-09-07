@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
 from collections import deque
@@ -55,7 +56,11 @@ class Listener:
                  is_playing: Optional[Callable[[], bool]] = None,
                  on_barge_in: Optional[Callable[[], Awaitable[None]]] = None,
                  min_utterance_s: float = 0.4, max_utterance_s: float = 25.0,
-                 pre_roll_ms: int = 300, barge_in_after_ms: int = 400,
+                 pre_roll_ms: int = 300,
+                 # 400 ms of "speech" is met by a pan lid, a tap or an extractor fan:
+                 # Silero scores plenty of kitchen noise as voice. Nearly a second of
+                 # sustained speech is still responsive but ignores almost all of it.
+                 barge_in_after_ms: int = int(os.environ.get("COOK_BARGE_IN_MS", "900")),
                  echo_window_s: float = 30.0, echo_grace_s: float = 1.5,
                  barge_in_mode: str = "voice"):
         # barge_in_mode: "voice" interrupts after barge_in_after_ms of sustained speech while

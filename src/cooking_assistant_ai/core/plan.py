@@ -240,6 +240,9 @@ class PlanItem:
     task_id: Optional[str] = None
     task_label: Optional[str] = None
     note: Optional[str] = None
+    # Scaled amounts for the ingredients this step uses, so the assistant can say "two
+    # tablespoons of olive oil" without the cook having to ask how much, every time.
+    ingredients: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -248,6 +251,7 @@ class PlanItem:
             "at": self.at.isoformat() if self.at else None, "duration_s": self.duration_s,
             "appliance": self.appliance, "temp_f": self.temp_f, "task_id": self.task_id,
             "task_label": self.task_label, "note": self.note,
+            "ingredients": list(self.ingredients),
         }
 
 
@@ -305,6 +309,8 @@ def build_plan(session: Session, now: datetime) -> Plan:
             at=at, duration_s=s.duration_s, appliance=appliance,
             temp_f=s.temp_f or (task.temp_f if task and appliance else None), task_id=task.id if task else None,
             task_label=task.label if task else None, note=ov.step_notes.get(s.id),
+            ingredients=[fmt_ingredient(i.name, i.amount * ov.scale_factor, i.unit)
+                         for i in (r.ingredient(iid) for iid in s.ingredient_ids) if i],
         )
 
     # Steps covered by tasks get the task's clock; each step's time follows the previous one.
@@ -529,6 +535,7 @@ def render_cook_plan(session: Session, now: datetime, upcoming: int = 10) -> str
             bits.append("not scheduled")
         meta = f" ({', '.join(bits)})" if bits else ""
         who = f"{item.recipe_title} step {item.step_n}: " if item.recipe_title else ""
-        lines.append(f"{tag}{when:>8}  {who}{item.text}{meta}  [{item.id}]")
+        uses = f" [uses: {', '.join(item.ingredients)}]" if item.ingredients else ""
+        lines.append(f"{tag}{when:>8}  {who}{item.text}{meta}{uses}  [{item.id}]")
         shown += 1
     return "\n".join(lines)

@@ -50,6 +50,29 @@ def pcm16_to_wav(pcm16: bytes, sample_rate: int = 16000) -> bytes:
     return buf.getvalue()
 
 
+def kitchen_prompt(session=None, base: str = "") -> str:
+    """A decoding hint for whisper, biased to what is actually being cooked.
+
+    Whisper's initial prompt shifts its language model toward the words in it, which is the
+    cheapest accuracy win available here: the hard words in a kitchen are the ingredient and
+    dish names, and the session already knows exactly which ones are in play tonight.
+    """
+    words = ["timer", "minutes", "oven", "stovetop", "burner", "air fryer", "rice cooker",
+             "preheat", "simmer", "saute", "sear", "roast", "plating", "substitute", "skip"]
+    if session is not None:
+        for recipe in session.recipes.values():
+            words.append(recipe.title)
+            words.extend(i.name.split(",")[0].strip() for i in recipe.ingredients)
+    seen, unique = set(), []
+    for w in words:
+        key = w.lower()
+        if key not in seen and w:
+            seen.add(key)
+            unique.append(w)
+    text = (base + " " if base else "") + ", ".join(unique) + "."
+    return text[:900]  # whisper ignores an over-long prompt, and it costs decode time
+
+
 class STT:
     async def transcribe(self, pcm16: bytes, sample_rate: int = 16000) -> str:  # pragma: no cover
         raise NotImplementedError
@@ -136,9 +159,10 @@ class WhisperCppSTT(STT):
         if self.model:
             model: Optional[Path] = Path(self.model).resolve()
         else:
-            # base.en: 39 ms on Vulkan / 0.33 s on CPU for a 4 s utterance; small.en is
-            # 0.59 s / 1.25 s. Set COOK_WHISPER_CPP_MODEL to trade latency for accuracy.
-            model = self.find_model(prefer=("ggml-base.en.bin", "ggml-small.en.bin"))
+            # small.en first: 0.59 s on Vulkan for a 4 s utterance against base.en's 39 ms,
+            # but base.en mangles enough ingredient names in a noisy kitchen to be worth the
+            # half second. COOK_WHISPER_CPP_MODEL overrides either way.
+            model = self.find_model(prefer=("ggml-small.en.bin", "ggml-base.en.bin"))
         if model is None or not model.exists():
             raise RuntimeError("no ggml whisper model found; set COOK_WHISPER_CPP_MODEL")
         cmd: List[str] = [

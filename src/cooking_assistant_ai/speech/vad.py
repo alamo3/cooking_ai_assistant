@@ -122,7 +122,9 @@ def build_vad(kind: Optional[str] = None) -> Optional[VAD]:
         return EnergyVAD()
     if kind == "silero":
         try:
-            return SileroVAD()
+            # 0.5 is Silero's general-purpose default and lets clatter and running water
+            # through as speech. A kitchen wants fewer false positives than missed words.
+            return SileroVAD(threshold=float(os.environ.get("COOK_VAD_THRESHOLD", "0.65")))
         except ImportError:
             return EnergyVAD()
     raise ValueError(f"unknown VAD '{kind}'")

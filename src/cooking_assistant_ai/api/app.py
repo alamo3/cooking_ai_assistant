@@ -39,6 +39,7 @@ from cooking_assistant_ai.llm.llm_orchestrator import (
 )
 from cooking_assistant_ai.model.types import Recipe, Session
 from cooking_assistant_ai.speech import STT, TTS, SentenceSplitter, build_stt, build_tts, build_vad
+from cooking_assistant_ai.speech.stt import kitchen_prompt
 from cooking_assistant_ai.speech.listener import Listener
 from cooking_assistant_ai.storage import sessions as session_snapshots
 from cooking_assistant_ai.storage.db import Store
@@ -85,7 +86,18 @@ class LiveSession:
 
     # -- open microphone ------------------------------------------------------
 
+    def tune_stt(self) -> None:
+        """Bias whisper toward tonight's dishes and ingredients. Called whenever the loaded
+        recipes change, since that is exactly what the cook is about to say out loud."""
+        if self.stt is None or not getattr(self.stt, "available", False):
+            return
+        try:
+            self.stt.prompt = kitchen_prompt(self.session, os.environ.get("COOK_WHISPER_PROMPT", ""))
+        except Exception as e:  # a decoding hint is never worth failing a cook over
+            log.warning("could not set the STT vocabulary hint: %s", e)
+
     def start_listening(self) -> Listener:
+        self.tune_stt()
         if self.listener is None:
             if self.stt is None or not self.stt.available:
                 raise RuntimeError("no STT backend configured")
@@ -158,6 +170,7 @@ class LiveSession:
             # autosave tick.
             if self.on_state_change:
                 self.on_state_change(self.session.id)
+            self.tune_stt()
             await self.broadcast({"type": "state", **ev.state})
         elif isinstance(ev, Notice):
             await self.broadcast({"type": "notice", "text": ev.text, "level": ev.level})

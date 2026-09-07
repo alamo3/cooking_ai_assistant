@@ -626,6 +626,28 @@ line, what the assistant reads aloud, the recipe block the model sees, and the t
 list (badged "swapped", with "(instead of butter)" beside the ingredient for as long as the
 session that made the swap lasts).
 
+## What the first real cook changed
+
+Cooking a meal with it surfaced things no benchmark did. Fixed so far:
+
+- **Substitutions left the timeline stale.** Step text updated, but task and timer labels are
+  free text the model wrote at `add_task` time ("butter sear") and nothing revisited them, so
+  the plan said olive oil while "next action" still said butter. A whole-recipe swap now
+  renames tasks, timer labels and completion hints too. A swap pinned with `at_step` does not:
+  it is not a rename.
+- **"Add the garlic" is useless with both hands full.** Every COOK PLAN line now carries the
+  scaled amounts for that step (`[uses: 1 1/2 tsp kosher salt, ...]`) and the dish name, and
+  the model is told to say both, so the cook never has to ask how much or for which dish.
+- **Too much at once.** The prompt used to ask for "what to do now and, if useful, what comes
+  next", which is two instructions. It now asks for exactly one, then silence.
+- **Mishearing.** whisper.cpp now prefers `small.en` over `base.en` (0.59 s against 39 ms on
+  Vulkan, worth it for ingredient names), and gets a decoding hint built from the session:
+  the titles and ingredients of the dishes actually loaded, which are precisely the words the
+  cook is about to say. `COOK_WHISPER_PROMPT` prepends your own.
+- **Barge-in triggered on clatter.** Silero scores running water and pan lids as speech, and
+  400 ms of it was enough to cut the assistant off. Now 900 ms sustained at a 0.65 threshold
+  (`COOK_BARGE_IN_MS`, `COOK_VAD_THRESHOLD`).
+
 ## Speech
 
 STT defaults to the whisper.cpp checkout in `whisper.cpp/`: the app spawns

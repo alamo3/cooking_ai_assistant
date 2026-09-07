@@ -742,7 +742,7 @@ def substitute(ctx: ToolContext, recipe_id: Any = None, ingredient_id: Any = Non
     ov = ctx.session.overlays[recipe.id]
     ov.substitutions = [x for x in ov.substitutions if x.ingredient_id != ing.id]
 
-    from cooking_assistant_ai.core.plan import apply_substitution
+    from cooking_assistant_ai.core.plan import apply_substitution, rename_in_text
 
     original = ""
     if step is None:
@@ -753,6 +753,32 @@ def substitute(ctx: ToolContext, recipe_id: Any = None, ingredient_id: Any = Non
         ctx.store.put_recipe(edited)
         ctx.session.recipes[recipe.id] = edited
         original = ing.name
+
+        # Labels are free text the model wrote from the old wording ("butter sear"), and the
+        # timeline is built from them, so without this the swap shows on the cook plan while
+        # the timeline and "next action" still name the ingredient that is no longer used.
+        for task in ctx.session.tasks.values():
+            if task.recipe_id == recipe.id:
+                task.label = rename_in_text(task.label, ing.name, rep)
+        step_ids = {s.id for s in edited.steps}
+
+        def belongs_here(timer) -> bool:
+            """Timers are often created with just a label and no link to a step or task, so
+            an unlinked one is treated as this cook's. The worst case is a cosmetic misnaming
+            when two loaded recipes share an ingredient, since the rename is a no-op unless
+            the label actually contains the old name."""
+            if timer.step_id:
+                return timer.step_id in step_ids
+            if timer.task_id:
+                task = ctx.session.tasks.get(timer.task_id)
+                return task is not None and task.recipe_id == recipe.id
+            return True
+
+        for timer in ctx.session.timers.values():
+            if belongs_here(timer):
+                timer.label = rename_in_text(timer.label, ing.name, rep)
+                if timer.on_complete_hint:
+                    timer.on_complete_hint = rename_in_text(timer.on_complete_hint, ing.name, rep)
     ov.substitutions.append(Substitution(ingredient_id=ing.id, replacement=rep, note=_str(note, "note"),
                                          at_step=step, original=original))
     where = " for this step only" if step else ", saved to the recipe"
