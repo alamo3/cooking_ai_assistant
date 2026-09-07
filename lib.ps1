@@ -44,3 +44,40 @@ function Get-LanAddress {
 
     return ($ranked | Select-Object -First 1).IPAddress
 }
+
+function Get-PortOwner {
+    <#
+    .SYNOPSIS
+      The process listening on a port, or $null. Used to tell "someone else has the port"
+      apart from a genuine crash, because retrying a bind conflict never helps.
+    #>
+    param([Parameter(Mandatory)][int]$Port)
+
+    $conn = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+    if (-not $conn) { return $null }
+
+    $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+    $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$($conn.OwningProcess)" -ErrorAction SilentlyContinue
+    [pscustomobject]@{
+        ProcessId   = $conn.OwningProcess
+        Name        = if ($proc) { $proc.ProcessName } else { "unknown" }
+        StartTime   = if ($proc) { $proc.StartTime } else { $null }
+        CommandLine = if ($cim) { $cim.CommandLine } else { "" }
+        IsAssistant = ($cim -and $cim.CommandLine -match "cooking-assistant-ai")
+    }
+}
+
+function Wait-PortFree {
+    <# Windows does not always release a listening socket the instant the process exits,
+       so the supervisor waits rather than treating a slow release as a crash. #>
+    param([Parameter(Mandatory)][int]$Port, [int]$TimeoutSeconds = 20)
+
+    for ($i = 0; $i -lt ($TimeoutSeconds * 4); $i++) {
+        if (-not (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    return $false
+}

@@ -11,6 +11,7 @@
 .PARAMETER Dev       Development mode: auto-restart when Python files change (implies -NoVoice unless -Voice)
 .PARAMETER Voice     With -Dev, keep the speech engines on (each restart re-warms them)
 .PARAMETER Http      Serve plain HTTP. The tablet microphone will NOT work (browsers require HTTPS)
+.PARAMETER Force     If something is already serving on the port, stop it and take over
 .PARAMETER Cloud     Use OpenRouter for inference, falling back to the local model if it errors.
                      Needs OPENROUTER_API_KEY set (setx OPENROUTER_API_KEY "sk-or-...").
 #>
@@ -23,7 +24,8 @@ param(
     [switch]$Dev,
     [switch]$Voice,
     [switch]$Http,
-    [switch]$Cloud
+    [switch]$Cloud,
+    [switch]$Force
 )
 if ($Dev -and -not $Voice) { $NoVoice = $true }
 
@@ -143,6 +145,42 @@ if ($Http) {
     Write-Host "  (Fully Kiosk: turn on ignoring SSL errors), or install ${scheme}://${lan}:$Port/cert"
 }
 Write-Host ""
+# 3b. Is the port already taken? A second instance is the most common way this fails, and
+# retrying a bind conflict never helps, so deal with it before the supervisor loop starts.
+$owner = Get-PortOwner -Port $Port
+if ($owner) {
+    Write-Host ""
+    if ($owner.IsAssistant) {
+        Write-Host "The kitchen assistant is already running on port $Port." -ForegroundColor Yellow
+        Write-Host "  pid $($owner.ProcessId), started $($owner.StartTime)"
+        if (-not $Force) {
+            Write-Host ""
+            Write-Host "  Nothing to do: open ${scheme}://localhost:$Port/ and use it."
+            Write-Host "  To replace it with this one, re-run with -Force."
+            Write-Host "  To restart it in place, use the gear in the tablet's top right."
+            exit 0
+        }
+    } else {
+        Write-Host "Port $Port is in use by something else:" -ForegroundColor Yellow
+        Write-Host "  pid $($owner.ProcessId)  $($owner.Name)"
+        if ($owner.CommandLine) { Write-Host "  $($owner.CommandLine)" }
+        if (-not $Force) {
+            Write-Host ""
+            Write-Host "  Serve somewhere else with -Port, or stop that process first." -ForegroundColor Red
+            Write-Host "  -Force stops it for you." -ForegroundColor Red
+            exit 1
+        }
+    }
+    Write-Host "-Force: stopping pid $($owner.ProcessId)..."
+    Stop-Process -Id $owner.ProcessId -Force
+    if (-not (Wait-PortFree -Port $Port)) {
+        Write-Host "Port $Port is still held after stopping pid $($owner.ProcessId)." -ForegroundColor Red
+        Write-Host "Pick another port with -Port, or reboot." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "Port $Port is free."
+}
+
 if ($Dev) { Write-Host "Dev mode: restarts on .py changes under src\. Sessions are snapshotted, so a cook survives the restart." }
 Write-Host "Starting (model + speech warm-up takes 20-40 s)... Ctrl+C stops it."
 
@@ -181,6 +219,11 @@ while ($true) {
         Write-Host ""
         Write-Host "--- restart requested from the tablet; starting again ---"
         Write-Host ""
+        # Windows can hold the listening socket for a moment after the process goes.
+        if (-not (Wait-PortFree -Port $Port)) {
+            Write-Error "Port $Port did not free up after the restart; giving up rather than crash-looping."
+            exit 1
+        }
         $crashes = @()
         continue
     }
