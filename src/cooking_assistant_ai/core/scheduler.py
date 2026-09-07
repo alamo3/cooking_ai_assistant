@@ -23,6 +23,13 @@ from cooking_assistant_ai.core.fmt import fmt_time, fmt_window
 from cooking_assistant_ai.model.types import Session, Task
 
 SHARED_APPLIANCES = ("oven",)  # can hold several tasks at once if the temperature matches
+
+# Appliances that finish when they finish. A rice cooker decides for itself when the rice is
+# done and then clicks off; nothing can be timed against it and no timer should be set for
+# one. Their tasks still carry a nominal duration so the rest of the meal can be interleaved
+# around them, but that number is an estimate, not a deadline, and only the cook can say the
+# thing is actually done.
+UNTIMED_APPLIANCES = ("rice_cooker", "bread_maker", "pressure_cooker")
 BURNERS = int(os.environ.get("COOK_BURNERS", "4"))  # stovetop burners available for auto-assignment
 
 
@@ -44,7 +51,18 @@ def normalize_appliance(appliance: Optional[str]) -> Optional[str]:
         a = "stovetop:" + a.split(":", 1)[1]
     if a in ("airfryer", "air_fryer", "air-fryer"):
         a = "air_fryer"
+    if a in ("ricecooker", "rice_cooker", "rice_maker", "ricepot", "rice_pot", "zojirushi"):
+        a = "rice_cooker"
+    if a in ("breadmaker", "bread_maker", "bread_machine", "breadmachine"):
+        a = "bread_maker"
+    if a in ("pressurecooker", "pressure_cooker", "instant_pot", "instantpot", "instapot"):
+        a = "pressure_cooker"
     return a
+
+
+def is_untimed(appliance: Optional[str]) -> bool:
+    """True for appliances whose finish time cannot be predicted, only reported."""
+    return bool(appliance) and _appliance_family(appliance) in UNTIMED_APPLIANCES
 
 
 def is_generic_stovetop(appliance: Optional[str]) -> bool:
@@ -173,6 +191,11 @@ def resolve(session: Session, now: datetime) -> None:
             if t.status == "active":
                 t.start_at = t.actual_start or t.start_at or now
                 t.end_at = t.start_at + dur
+                # A rice cooker that has run past its estimate has not overrun: nobody knows
+                # when it finishes. Keep the window ahead of now so dependent tasks stay in
+                # the future rather than being scheduled into the past.
+                if t.awaits_cook and t.end_at < now:
+                    t.end_at = now
                 continue
             earliest = now
             if t.not_before is not None and t.not_before > earliest:

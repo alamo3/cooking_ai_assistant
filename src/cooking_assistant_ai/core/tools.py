@@ -41,6 +41,9 @@ class ToolContext:
     session: Session
     clock: Clock
     store: Store
+    # Set by the orchestrator. Tools that need a model of their own (searching the web for a
+    # recipe, parsing a page into the schema) borrow this one rather than building another.
+    llm: Any = None
 
     @property
     def now(self) -> datetime:
@@ -101,6 +104,11 @@ def tool(name: str, description: str, params: Dict[str, Any], mid_cook: bool = F
     return deco
 
 
+def is_async(name: str) -> bool:
+    spec = REGISTRY.get(name)
+    return spec is not None and inspect.iscoroutinefunction(spec.fn)
+
+
 def tool_schemas(names: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     specs = REGISTRY.values() if names is None else [REGISTRY[n] for n in names]
     return [s.ollama_schema() for s in specs]
@@ -152,6 +160,17 @@ def _float(v: Any, name: str, required: bool = False) -> Optional[float]:
         return float(v)
     except (TypeError, ValueError):
         raise ToolError(f"'{name}' must be a number, got {v!r}")
+
+
+def _bool(v: Any, name: str) -> bool:
+    """Models send true, "true", "yes" and 1 interchangeably."""
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return False
+    if isinstance(v, (int, float)):
+        return bool(v)
+    return str(v).strip().lower() not in _NULLISH
 
 
 def _list(v: Any, name: str) -> List[Any]:
@@ -323,12 +342,13 @@ _TASK_PARAMS = _params({
     "label": {"type": "string", "description": "short unique name, e.g. 'rice', 'chicken roast'"},
     "recipe_id": {"type": "string"},
     "step_ids": {"type": "array", "items": {"type": "string"}, "description": "recipe steps this task covers"},
-    "appliance": {"type": "string", "description": "oven | stovetop (a free burner is assigned automatically) | stovetop:2 (a specific burner) | air_fryer | null"},
+    "appliance": {"type": "string", "description": "oven | stovetop (a free burner is assigned automatically) | stovetop:2 (a specific burner) | air_fryer | rice_cooker | pressure_cooker | bread_maker | null"},
     "temp_f": {"type": "integer"},
     "duration_s": {"type": "integer", "description": "defaults to the sum of the steps' durations"},
     "after": {"type": "string", "description": "task label/id that must finish before this starts"},
     "before": {"type": "string", "description": "task label/id that must start after this finishes"},
     "must_finish_by": {"type": "string", "description": "'plating' to schedule as late as possible so it ends at plating, or a task label/id"},
+    "awaits_cook": {"type": "boolean", "description": "the appliance decides when it is done and the cook will tell you (rice cooker and friends set this automatically). duration_s is then only an estimate for planning; never set a timer for it"},
 }, ["label"])
 
 
@@ -339,7 +359,8 @@ _TASK_PARAMS = _params({
 )
 def add_task(ctx: ToolContext, label: Any = None, recipe_id: Any = None, step_ids: Any = None,
              appliance: Any = None, temp_f: Any = None, duration_s: Any = None,
-             after: Any = None, before: Any = None, must_finish_by: Any = None) -> Tuple[str, Optional[str]]:
+             after: Any = None, before: Any = None, must_finish_by: Any = None,
+             awaits_cook: Any = None) -> Tuple[str, Optional[str]]:
     s = ctx.session
     label_s = _str(label, "label", required=True) or ""
     if s.find_task(label_s) is not None and any(t.label.lower() == label_s.lower() for t in s.tasks.values()):
@@ -356,6 +377,11 @@ def add_task(ctx: ToolContext, label: Any = None, recipe_id: Any = None, step_id
 
     appl = scheduler.normalize_appliance(_str(appliance, "appliance"))
     auto = scheduler.is_generic_stovetop(appl)
+    if scheduler.is_untimed(appl) and _str(must_finish_by, "must_finish_by"):
+        raise ToolError(
+            f"{appl} finishes when it finishes, so it cannot be held to must_finish_by. "
+            f"Drop must_finish_by, start it early enough, and ask the cook to tell you when "
+            f"it is done.")
     temp = _int(temp_f, "temp_f") or None  # 0 means "no temperature", not absolute zero
     dur = _int(duration_s, "duration_s", minimum=1)
     if dur is None:
@@ -397,6 +423,8 @@ def add_task(ctx: ToolContext, label: Any = None, recipe_id: Any = None, step_id
         id=s.new_id("t"), label=label_s, recipe_id=recipe.id if recipe else "",
         step_ids=steps, appliance=appl, temp_f=temp, duration_s=dur, appliance_auto=auto,
         depends_on=deps, must_finish_by=mfb,
+        # A rice cooker is untimed whether or not the model realised it.
+        awaits_cook=bool(_bool(awaits_cook, "awaits_cook")) or scheduler.is_untimed(appl),
     )
     s.tasks[task.id] = task
     if before_task is not None:
@@ -663,6 +691,14 @@ def set_timer(ctx: ToolContext, label: Any = None, duration_s: Any = None, task_
     for existing in s.running_timers():
         if existing.label.lower() == label_s.lower():
             raise ToolError(f"a timer labelled '{label_s}' is already running (ends {fmt_time(existing.end_at)}); cancel it or use a different label")
+    if tid:
+        _t = s.tasks.get(tid)
+        if _t is not None and _t.awaits_cook:
+            raise ToolError(
+                f"{_t.label} is on a {_t.appliance}, which finishes when it finishes; a timer "
+                f"would go off at a time that means nothing. Tell the cook roughly how long it "
+                f"usually takes and ask them to say when it is done.")
+
     timer = Timer(
         id=s.new_id("tm"), label=label_s, task_id=tid, step_id=sid,
         end_at=ctx.now + timedelta(seconds=dur),
@@ -1096,6 +1132,10 @@ def dispatch(ctx: ToolContext, name: str, args: Optional[Dict[str, Any]] = None)
     if spec is None:
         return ToolResult(name, args, ok=False, state=render_state(ctx.session, ctx.now),
                           reason=f"unknown tool '{name}'. Available: {', '.join(sorted(REGISTRY))}")
+    if inspect.iscoroutinefunction(spec.fn):
+        return ToolResult(name, args, ok=False, state=render_state(ctx.session, ctx.now),
+                          reason=f"'{name}' reaches the network and must be awaited; "
+                                 f"call it through adispatch")
     sig = inspect.signature(spec.fn)
     accepted = {k: v for k, v in args.items() if k in sig.parameters}
     domain = "state"
@@ -1106,3 +1146,135 @@ def dispatch(ctx: ToolContext, name: str, args: Optional[Dict[str, Any]] = None)
         return ToolResult(name, args, ok=False, state=render_domain(ctx, domain), reason=e.reason, domain=domain)
     except scheduler.ScheduleError as e:
         return ToolResult(name, args, ok=False, state=render_domain(ctx, domain), reason=e.reason, domain=domain)
+
+
+async def adispatch(ctx: ToolContext, name: str, args: Optional[Dict[str, Any]] = None) -> ToolResult:
+    """Same contract as dispatch, but able to run tools that reach the network.
+
+    Everything stays synchronous except the handful of tools that search the web or fetch a
+    page, so the state machine keeps its "one call, one envelope" shape.
+    """
+    spec = REGISTRY.get(name)
+    if spec is None or not inspect.iscoroutinefunction(spec.fn):
+        return dispatch(ctx, name, args)
+    args = dict(args or {})
+    sig = inspect.signature(spec.fn)
+    accepted = {k: v for k, v in args.items() if k in sig.parameters}
+    domain = "state"
+    try:
+        domain, message = await spec.fn(ctx, **accepted)
+        return ToolResult(name, args, ok=True, state=render_domain(ctx, domain), message=message, domain=domain)
+    except ToolError as e:
+        return ToolResult(name, args, ok=False, state=render_domain(ctx, domain), reason=e.reason, domain=domain)
+    except scheduler.ScheduleError as e:
+        return ToolResult(name, args, ok=False, state=render_domain(ctx, domain), reason=e.reason, domain=domain)
+    except Exception as e:  # network failures must read like any other rejection
+        return ToolResult(name, args, ok=False, state=render_domain(ctx, domain),
+                          reason=f"{name} failed: {e}", domain=domain)
+
+
+# --------------------------------------------------------------------------- the internet
+
+_FIND_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "recipes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "url": {"type": "string"},
+                    "source": {"type": "string", "description": "site name"},
+                    "summary": {"type": "string", "description": "one line: what it is and roughly how long"},
+                    "servings": {"type": "integer"},
+                },
+                "required": ["title", "url"],
+            },
+        }
+    },
+    "required": ["recipes"],
+}
+
+
+@tool(
+    "find_recipes",
+    "Search the web for real, published recipes. Use this instead of inventing a dish: "
+    "invented recipes are guesswork, published ones have been cooked by someone. Returns "
+    "candidates with source URLs; pass one to import_recipe to save it.",
+    _params({
+        "query": {"type": "string", "description": "what to look for, e.g. 'weeknight miso salmon traybake'"},
+        "count": {"type": "integer", "description": "how many candidates, default 4"},
+    }, ["query"]),
+)
+async def find_recipes(ctx: ToolContext, query: Any = None, count: Any = None) -> Tuple[str, Optional[str]]:
+    q = _str(query, "query", required=True) or ""
+    n = max(1, min(6, _int(count, "count") or 4))
+    search = getattr(ctx.llm, "search", None)
+    if search is None:
+        raise ToolError("this backend cannot search the web (it needs the cloud model). "
+                        "Suggest something from the library, or ask the cook for a URL.")
+
+    diet = ctx.store.diet
+    diet_line = f" It must be {diet}." if diet and diet != "none" else ""
+    stock = ", ".join(i["name"] for i in ctx.store.inventory()) or "nothing recorded"
+    raw = await search(
+        [{"role": "user", "content":
+          f"Find {n} real, published recipes for: {q}.{diet_line}\n"
+          f"The cook already has: {stock}. Prefer recipes that lean on those.\n"
+          f"Only return recipes you actually found on a real page, each with its real URL. "
+          f"Do not invent recipes or URLs. Reply as JSON matching the schema."}],
+        _FIND_SCHEMA, n)
+    try:
+        found = json.loads(raw).get("recipes", [])
+    except (ValueError, AttributeError):
+        raise ToolError("the search came back unreadable; try a different query or suggest "
+                        "something from the library")
+    if not found:
+        raise ToolError(f"nothing found for '{q}'. Try broader wording.")
+
+    ctx.session.found_recipes = {r["url"]: r for r in found if r.get("url")}  # type: ignore[attr-defined]
+    lines = [f"FOUND {len(found)} recipe(s) for '{q}':"]
+    for r in found:
+        bits = [r.get("title", "untitled")]
+        if r.get("source"):
+            bits.append(f"({r['source']})")
+        if r.get("servings"):
+            bits.append(f"serves {r['servings']}")
+        lines.append("  " + " ".join(bits))
+        if r.get("summary"):
+            lines.append(f"      {r['summary']}")
+        lines.append(f"      {r.get('url')}")
+    lines.append("Tell the cook what you found in one or two sentences. Call import_recipe "
+                 "with the url of the one they pick.")
+    return "recipes", "\n".join(lines)
+
+
+@tool(
+    "import_recipe",
+    "Fetch a recipe from a URL and save it to the library, ingredients, steps, timings and all. "
+    "Use it on a url from find_recipes, or one the cook read out.",
+    _params({"url": {"type": "string"}}, ["url"]),
+)
+async def import_recipe(ctx: ToolContext, url: Any = None) -> Tuple[str, Optional[str]]:
+    from cooking_assistant_ai.api.app import import_recipe_from_url
+    from cooking_assistant_ai.core.diet import check_recipe, summarize
+
+    target = _str(url, "url", required=True) or ""
+    if not target.lower().startswith(("http://", "https://")):
+        raise ToolError(f"'{target}' is not a URL. Use find_recipes first, or ask the cook to "
+                        f"read out the address.")
+    if ctx.llm is None:
+        raise ToolError("no model available to read the page")
+    recipe = await import_recipe_from_url(target, ctx.llm, ctx.store)
+
+    violations = check_recipe([i.name for i in recipe.ingredients], ctx.store.diet)
+    blocked = [v for v in violations if v.severity == "excluded"]
+    if blocked:
+        ctx.store.delete_recipe(recipe.id)
+        raise ToolError(f"cannot save '{recipe.title}': {summarize(violations)}. "
+                        f"This kitchen is {ctx.store.diet}; find one that fits.")
+    ctx.session.add_recipe(recipe)
+    return "recipes", (f"imported '{recipe.title}' [{recipe.id}], {len(recipe.ingredients)} "
+                       f"ingredients, {len(recipe.steps)} steps, serves {recipe.servings}. "
+                       f"It is saved and loaded.")

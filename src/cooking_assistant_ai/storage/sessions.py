@@ -85,7 +85,7 @@ def _task_dict(t: Task) -> Dict[str, Any]:
         "appliance_auto": t.appliance_auto, "start_at": _dt(t.start_at), "end_at": _dt(t.end_at),
         "status": t.status, "depends_on": list(t.depends_on), "must_finish_by": t.must_finish_by,
         "not_before": _dt(t.not_before), "actual_start": _dt(t.actual_start),
-        "actual_end": _dt(t.actual_end),
+        "actual_end": _dt(t.actual_end), "awaits_cook": t.awaits_cook,
     }
 
 
@@ -97,7 +97,7 @@ def _task(d: Dict[str, Any]) -> Task:
         end_at=_parse_dt(d.get("end_at")), status=d.get("status", "pending"),
         depends_on=list(d.get("depends_on") or ()), must_finish_by=d.get("must_finish_by"),
         not_before=_parse_dt(d.get("not_before")), actual_start=_parse_dt(d.get("actual_start")),
-        actual_end=_parse_dt(d.get("actual_end")),
+        actual_end=_parse_dt(d.get("actual_end")), awaits_cook=d.get("awaits_cook", False),
     )
 
 

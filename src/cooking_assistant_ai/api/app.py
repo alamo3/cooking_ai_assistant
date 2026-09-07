@@ -410,9 +410,15 @@ async def extract_recipe(source: str, llm: LLM, store: Store) -> Recipe:
         "Extract the recipe below as JSON. Rules: one ingredient entry per line, with amount as a number "
         "(convert fractions like 1/2 to 0.5; use 1 if no amount is given), unit as a short string (g, ml, cup, "
         "tbsp, tsp, oz, lb, clove) or null for countable items; steps in order with the original wording "
-        "lightly tidied; duration_s in seconds when the step states a time (null otherwise); appliance as "
-        "'oven', 'stovetop:1', 'air_fryer', 'grill', 'microwave' or null; temp_f in Fahrenheit (convert from C) "
-        "when the step states a temperature; servings as an integer.\n\n" + source
+        "lightly tidied; appliance as 'oven', 'stovetop:1', 'air_fryer', 'rice_cooker', 'pressure_cooker', "
+        "'bread_maker', 'grill', 'microwave' or null; temp_f in Fahrenheit (convert from C) when the step "
+        "states a temperature; servings as an integer.\n"
+        # Pages rarely time every step, but the planner interleaves dishes using these
+        # numbers, so a null makes an imported recipe unschedulable. An estimate is far
+        # better than nothing.
+        "duration_s: ALWAYS give a number of seconds for EVERY step. Use the time the page states; where it "
+        "gives none, estimate how long the step really takes (chopping an onion 120, bringing a pan up to "
+        "heat 180, resting meat 600).\n\n" + source
     )
     raw = await llm.complete([{"role": "user", "content": prompt}], json_schema=_RECIPE_SCHEMA)
     try:

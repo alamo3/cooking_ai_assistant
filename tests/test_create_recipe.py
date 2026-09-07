@@ -78,7 +78,10 @@ def test_plain_string_ingredients_and_steps_are_accepted(ctx):
     assert len(recipe.steps) == 2
 
 
-def test_meal_options_invite_invention(ctx):
+def test_meal_options_send_the_model_to_the_web_first(ctx):
+    """Invented recipes were the weakest part of the first real cook: search, then invent."""
     text = render_meal_options(ctx.store, meals=8)
-    assert "invent dishes" in text and "create_recipe" in text
+    assert "find_recipes" in text and "import_recipe" in text
+    assert text.index("find_recipes") < text.index("create_recipe"), "invention should be the fallback"
+    assert "nothing usable" in text
     assert "never propose a long shopping list" in text

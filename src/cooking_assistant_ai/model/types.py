@@ -163,6 +163,10 @@ class Task:
     not_before: Optional[datetime] = None  # set by move_task(delay_minutes)
     actual_start: Optional[datetime] = None  # set by start_task
     actual_end: Optional[datetime] = None  # set by mark_complete
+    # The appliance decides when this is done and tells nobody: the cook reports it. The
+    # window is still computed so the meal can be planned around it, but it is an estimate,
+    # never a deadline, and the task stays active past its end until someone says otherwise.
+    awaits_cook: bool = False
 
     @property
     def is_open(self) -> bool:

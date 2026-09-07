@@ -648,6 +648,38 @@ Cooking a meal with it surfaced things no benchmark did. Fixed so far:
   400 ms of it was enough to cut the assistant off. Now 900 ms sustained at a 0.65 threshold
   (`COOK_BARGE_IN_MS`, `COOK_VAD_THRESHOLD`).
 
+## Appliances that finish when they finish
+
+A rice cooker decides for itself when the rice is done and tells nobody. `rice_cooker`,
+`pressure_cooker` and `bread_maker` are therefore **untimed**: their tasks carry a nominal
+duration so the rest of the meal can be interleaved around them, but that number is an
+estimate, never a deadline.
+
+- `set_timer` on one is refused, with a reason that re-prompts: say roughly how long it
+  usually takes and ask the cook to report.
+- `must_finish_by` on one is refused for the same reason.
+- Running past the estimate is not an overrun. The status reads "running, tell me when it's
+  done" and the window is dragged along with the clock so whatever follows stays in the
+  future instead of being scheduled into the past.
+- `mark_complete` when the cook says it clicked off, and everything after it moves.
+
+## Recipes from the web
+
+Invented recipes were the weakest part of the first real cook, so the model now searches
+instead. `find_recipes` runs one OpenRouter request with the web plugin enabled and returns
+real published recipes with their source URLs; `import_recipe` fetches one and saves it,
+diet-checked like anything else.
+
+Search is deliberately its own tool rather than a plugin on the main conversation: it is
+billed per result (~$0.004), so it runs on the turn that needs the internet and no other.
+`create_recipe` survives as the fallback for when a search finds nothing usable, or for
+writing down something the cook describes.
+
+Imported steps are now required to carry a duration estimate even when the page states none,
+since the planner interleaves dishes using those numbers and a null makes a recipe
+unschedulable. The extractor also recognises the untimed appliances, so a rice cooker recipe
+imports as untimed without anyone intervening.
+
 ## Speech
 
 STT defaults to the whisper.cpp checkout in `whisper.cpp/`: the app spawns

@@ -173,8 +173,10 @@ def render_meal_options(store: Store, meals: Optional[int] = None, scale: float 
         lines.extend(f"  {m.recipe.title} [{m.recipe.id}] - {m.diet_note}" for m in banned)
     lines.append("")
     lines.append("Recommend a set of meals and say how many portions it makes. You are not "
-                 "limited to the list above: invent dishes around what is in stock and save each "
-                 "one with create_recipe, which adds it to the library permanently. A dish may "
+                 "limited to the list above: call find_recipes to search the web for real "
+                 "published recipes built around what is in stock, then import_recipe to save "
+                 "the ones the cook picks. Fall back to create_recipe only when a search turns "
+                 "up nothing usable. A dish may "
                  "need one or two easy things from the shop; never propose a long shopping list. "
                  "Once the cook agrees, call create_recipe for anything new, then shopping_list "
                  "for what they must buy.")

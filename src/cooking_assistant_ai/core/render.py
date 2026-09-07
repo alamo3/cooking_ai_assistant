@@ -121,6 +121,10 @@ def _task_status(t: Task, now: datetime) -> str:
         return "done"
     if t.status == "skipped":
         return "skipped"
+    if t.awaits_cook and t.status == "active":
+        return "running, tell me when it's done"
+    if t.awaits_cook:
+        return "waiting to start, ~est, ends when you say"
     if t.status == "active":
         left = (t.end_at - now).total_seconds() if t.end_at else 0
         return f"active, {fmt_dur(left)} left" if left >= 0 else f"active, overdue {fmt_dur(-left)}"

@@ -80,3 +80,59 @@ def test_the_speech_vocabulary_follows_what_is_being_cooked(ctx):
 
 def test_the_vocabulary_hint_works_without_a_session():
     assert "rice cooker" in kitchen_prompt()
+
+
+# --------------------------------------------------- appliances that finish when they finish
+
+def test_a_rice_cooker_task_is_untimed(ctx):
+    r = dispatch(ctx, "add_task", {"label": "rice", "appliance": "rice cooker", "duration_s": 1800})
+    assert r.ok, r.reason
+    task = next(iter(ctx.session.tasks.values()))
+    assert task.appliance == "rice_cooker" and task.awaits_cook
+
+
+def test_a_deadline_on_an_untimed_appliance_is_refused(ctx):
+    r = dispatch(ctx, "add_task", {"label": "rice", "appliance": "rice_cooker",
+                                   "duration_s": 1800, "must_finish_by": "plating"})
+    assert not r.ok and "finishes when it finishes" in r.reason
+
+
+def test_no_timer_for_something_that_cannot_be_timed(ctx):
+    dispatch(ctx, "add_task", {"label": "rice", "appliance": "rice_cooker", "duration_s": 1800})
+    r = dispatch(ctx, "set_timer", {"label": "rice", "duration_s": 1800, "task_id": "rice"})
+    assert not r.ok
+    assert "finishes when it finishes" in r.reason and "say when it is done" in r.reason
+
+
+def test_running_past_the_estimate_is_not_an_overrun(ctx):
+    from datetime import timedelta
+
+    dispatch(ctx, "add_task", {"label": "rice", "appliance": "rice_cooker", "duration_s": 1800})
+    dispatch(ctx, "add_task", {"label": "serve", "after": "rice", "duration_s": 120})
+    dispatch(ctx, "start_task", {"task_id": "rice"})
+    ctx.clock.set(ctx.clock.now() + timedelta(minutes=45))          # 15 past the estimate
+
+    timeline = render_timeline(ctx.session, ctx.clock.now())
+    assert "tell me when it's done" in timeline
+    rice = ctx.session.find_task("rice")
+    # the window is dragged along so what follows stays in the future, not the past
+    assert rice.end_at >= ctx.clock.now()
+    serve = ctx.session.find_task("serve")
+    assert serve.start_at >= ctx.clock.now()
+
+    assert dispatch(ctx, "mark_complete", {"task_id": "rice"}).ok
+    assert ctx.session.find_task("rice").status == "complete"
+
+
+def test_untimed_survives_a_restart(ctx):
+    from cooking_assistant_ai.storage import sessions as snap
+
+    dispatch(ctx, "add_task", {"label": "rice", "appliance": "rice_cooker", "duration_s": 1800})
+    restored = snap.from_dict(snap.to_dict(ctx.session))
+    assert next(iter(restored.tasks.values())).awaits_cook
+
+
+def test_the_model_is_told_to_search_before_inventing():
+    assert "find_recipes" in SYSTEM_PROMPT and "import_recipe" in SYSTEM_PROMPT
+    assert SYSTEM_PROMPT.index("find_recipes") < SYSTEM_PROMPT.index("create_recipe")
+    assert "rice cooker" in SYSTEM_PROMPT and "never set a timer for one" in SYSTEM_PROMPT

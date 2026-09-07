@@ -243,6 +243,31 @@ class OpenRouterLLM(LLM):
 
     # -- one-shot -----------------------------------------------------------
 
+    async def search(self, messages: List[Dict[str, Any]],
+                     json_schema: Optional[Dict[str, Any]] = None,
+                     max_results: int = 4) -> str:
+        """One completion with OpenRouter's web plugin enabled.
+
+        Kept off the main conversation deliberately: search is billed per result (roughly
+        $0.004 each), so it runs only on the turn that actually needs the internet rather
+        than on every "what's next?".
+        """
+        body = self._body(messages, None, stream=False)
+        body["plugins"] = [{"id": "web", "max_results": max_results}]
+        if json_schema:
+            body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "result", "strict": False, "schema": json_schema},
+            }
+        r = await self._post(body)
+        payload = r.json()
+        if payload.get("usage"):
+            self.usage.add(payload["usage"])  # search results are billed too
+        choices = payload.get("choices") or []
+        if not choices:
+            return ""
+        return ((choices[0].get("message") or {}).get("content") or "").strip()
+
     async def complete(self, messages: List[Dict[str, Any]],
                        json_schema: Optional[Dict[str, Any]] = None) -> str:
         body = self._body(messages, None, stream=False)
@@ -325,6 +350,12 @@ class FallbackLLM(LLM):
             self.fallbacks += 1
             log.warning("primary LLM failed (%s); falling back", e)
             return await self.secondary.complete(messages, json_schema)
+
+    async def search(self, messages, json_schema=None, max_results: int = 4) -> str:
+        search = getattr(self.primary, "search", None)
+        if search is None:
+            raise RuntimeError("this backend cannot search the web")
+        return await search(messages, json_schema, max_results)
 
     async def warm(self) -> None:
         """Warm the primary only. Warming the local fallback would load the model into VRAM

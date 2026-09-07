@@ -21,7 +21,7 @@ from cooking_assistant_ai.core.context import assemble_context
 from cooking_assistant_ai.core.fmt import fmt_time
 from cooking_assistant_ai.core.render import state_dict
 from cooking_assistant_ai.core.scheduler import next_action, resolve
-from cooking_assistant_ai.core.tools import ToolContext, dispatch, tool_schemas
+from cooking_assistant_ai.core.tools import ToolContext, adispatch, dispatch, tool_schemas
 from cooking_assistant_ai.llm.client import LLM, ToolCallRequest, extract_text_tool_calls, strip_control_markup
 from cooking_assistant_ai.model.events import Event, IdleTick, SystemPrompt, TimerFired, UserUtterance
 from cooking_assistant_ai.model.types import Session, Timer, Turn
@@ -201,7 +201,7 @@ class Orchestrator:
         self.llm = llm
         self.output = output
         self.clock = clock or Clock()
-        self.ctx = ToolContext(session, self.clock, store)
+        self.ctx = ToolContext(session, self.clock, store, llm=llm)
         self.queue: "asyncio.Queue[Any]" = asyncio.Queue()
         self.tools = tool_schemas()
         self.idle_interval_s = idle_interval_s
@@ -458,7 +458,7 @@ class Orchestrator:
                     "tool_calls": [{"function": {"name": c.name, "arguments": c.args}} for c in calls],
                 })
                 for c in calls:
-                    result = dispatch(self.ctx, c.name, c.args)
+                    result = await adispatch(self.ctx, c.name, c.args)
                     env = result.envelope()
                     gate.dispatched += 1
                     if result.ok:
