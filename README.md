@@ -696,9 +696,16 @@ Rice cooker: rice - tell me when it's done
 free: Burner 2, Burner 3, Burner 4, Air fryer
 ```
 
-Five states: `active` (green, gently pulsing), `due` (amber, should already be going),
-`reserved`, `needed` (dashed outline: a loaded recipe wants it, nothing scheduled yet), and
-`free` (dimmed). An untimed appliance says "tell me when it's done" rather
+Each appliance is **drawn**, not listed: a burner ring with its flame crown, the oven with
+its window, the rice cooker with steam, the microwave with its door. One stroke colour plus
+a few named parts (`.flame`, `.glow`, `.steam`) that CSS lights by state, so the state lives
+in the stylesheet and the JS stays declarative.
+
+Five states: `active` — the thing is visibly on, amber, flames lit and glowing, steam rising;
+`due` — should already be going, amber outline pulsing but unlit; `reserved` — claimed, not
+yet running; `needed` — dashed outline, a loaded recipe wants it and nothing is scheduled;
+`free` — dimmed and out of the way. All animation is dropped under
+`prefers-reduced-motion`. An untimed appliance says "tell me when it's done" rather
 than counting down to a time it cannot know. The same board goes into the model's context, so
 it knows the hob is full before promising anything.
 

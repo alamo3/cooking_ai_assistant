@@ -353,30 +353,71 @@ input[type=checkbox] { accent-color: var(--accent); width: 18px; height: 18px; }
 button.ghost { background: transparent; color: var(--muted); }
 
 /* ------------------------------------------------------------------- appliance board */
-.appliances { display: grid; gap: 8px; margin-bottom: 14px;
-  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); }
-.appl { background: var(--panel-2); border: 1px solid var(--line); border-radius: 14px;
-  padding: 10px 11px; min-height: 68px; display: flex; flex-direction: column; gap: 3px;
-  transition: border-color .2s, background .2s; }
-.appl .appl-name { font-size: 12px; letter-spacing: .04em; text-transform: uppercase;
-  color: var(--muted); display: flex; justify-content: space-between; align-items: center; gap: 6px; }
-.appl .appl-temp { color: var(--accent); font-weight: 600; letter-spacing: 0; text-transform: none; }
-.appl .appl-what { font-size: 14px; color: var(--text); font-weight: 600; line-height: 1.25; }
-.appl .appl-when { font-size: 12px; color: var(--muted); }
+/* A picture of the kitchen. Every appliance is drawn in one stroke colour; the parts that
+   glow when it is running (.flame, .glow, .steam) are lit by state, so an active hob reads
+   as "on" from across the room the way a real one does. */
+.appliances { display: grid; gap: 10px; margin-bottom: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); }
 
-.appl.free { opacity: .5; }
+.appl { background: var(--panel-2); border: 1px solid var(--line); border-radius: 16px;
+  padding: 12px 10px 11px; display: flex; flex-direction: column; align-items: center;
+  gap: 2px; text-align: center; transition: border-color .25s, background .25s, opacity .25s; }
+
+.appl-icon { width: 46px; height: 46px; display: block; margin-bottom: 4px;
+  fill: none; stroke: var(--muted); stroke-width: 2.2;
+  stroke-linecap: round; stroke-linejoin: round;
+  transition: stroke .25s, filter .25s; }
+.appl-icon .body { stroke-width: 2.4; }
+/* the lit parts: invisible until the appliance is running */
+.appl-icon .glow { fill: transparent; transition: fill .3s, stroke .3s; }
+.appl-icon .flame, .appl-icon .steam { opacity: 0; transition: opacity .3s; }
+
+.appl-name { font-size: 11px; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--muted); display: flex; align-items: center; gap: 5px; }
+.appl-temp { color: var(--accent); font-weight: 700; letter-spacing: 0; }
+.appl-what { font-size: 13.5px; color: var(--text); font-weight: 600; line-height: 1.25;
+  overflow-wrap: anywhere; }
+.appl-when { font-size: 11.5px; color: var(--muted); }
+
+/* --- free: present, unlit, out of the way ------------------------------------------ */
+.appl.free { opacity: .42; }
 .appl.free .appl-what { color: var(--muted); font-weight: 500; }
-.appl.active { border-color: rgba(143,191,127,.5); background: linear-gradient(var(--good-soft), transparent); }
-.appl.active .appl-name { color: var(--good); }
-.appl.due { border-color: rgba(226,145,63,.55); background: linear-gradient(rgba(226,145,63,.13), transparent); }
-.appl.due .appl-name { color: var(--warn); }
-.appl.reserved { border-color: var(--line-strong); }
-.appl.needed { border-style: dashed; border-color: var(--line-strong); opacity: .78; }
+
+/* --- needed: a recipe wants it, nothing scheduled yet ------------------------------- */
+.appl.needed { border-style: dashed; border-color: var(--line-strong); opacity: .8; }
 .appl.needed .appl-what { color: var(--muted); font-weight: 500; }
+
+/* --- reserved: claimed, not yet running --------------------------------------------- */
+.appl.reserved { border-color: var(--line-strong); }
+.appl.reserved .appl-icon { stroke: var(--text); }
+
+/* --- due: should already be going --------------------------------------------------- */
+.appl.due { border-color: rgba(226,145,63,.6); background: linear-gradient(rgba(226,145,63,.12), transparent);
+  animation: appl-due 1.8s ease-in-out infinite; }
+.appl.due .appl-icon { stroke: var(--warn); }
+.appl.due .appl-name { color: var(--warn); }
+@keyframes appl-due { 50% { border-color: rgba(226,145,63,.22); } }
+
+/* --- active: the thing is ON -------------------------------------------------------- */
+.appl.active { border-color: rgba(233,165,63,.55);
+  background: radial-gradient(120% 80% at 50% 18%, rgba(233,165,63,.18), transparent 70%); }
+.appl.active .appl-icon { stroke: var(--accent); filter: drop-shadow(0 0 6px rgba(233,165,63,.45)); }
+.appl.active .appl-name { color: var(--accent); }
+.appl.active .appl-icon .glow { fill: rgba(233,165,63,.9); stroke: rgba(233,165,63,.9); }
+.appl.active .appl-icon .flame { opacity: 1; stroke: #ffb347;
+  animation: appl-flicker 2.6s ease-in-out infinite; }
+@keyframes appl-flicker { 0%,100% { opacity: 1 } 45% { opacity: .55 } 70% { opacity: .85 } }
+
+/* steam only makes sense on something that is actually steaming */
+.appl.active .appl-icon .steam { opacity: .85; stroke: var(--muted);
+  animation: appl-steam 3s ease-in-out infinite; }
+@keyframes appl-steam { 0% { opacity: 0; transform: translateY(3px) } 40% { opacity: .85 }
+                        100% { opacity: 0; transform: translateY(-4px) } }
+.appl-icon .steam { transform-origin: 50% 100%; }
+
+/* an untimed appliance has no countdown, so the wait is the message */
 .appl.untimed .appl-when { color: var(--warn); }
 
-/* a quiet pulse so an active hob reads as "on" from across the kitchen */
-.appl.active .appl-name::after { content: ""; width: 7px; height: 7px; border-radius: 50%;
-  background: var(--good); box-shadow: 0 0 0 3px var(--good-soft); animation: appl-pulse 2.4s infinite; }
-@keyframes appl-pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
-@media (prefers-reduced-motion: reduce) { .appl.active .appl-name::after { animation: none } }
+@media (prefers-reduced-motion: reduce) {
+  .appl.due, .appl.active .appl-icon .flame, .appl.active .appl-icon .steam { animation: none; }
+}
