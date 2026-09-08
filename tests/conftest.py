@@ -32,4 +32,10 @@ def session(store: Store, clock: Clock) -> Session:
 
 @pytest.fixture
 def ctx(session: Session, clock: Clock, store: Store) -> ToolContext:
+    # A fully equipped test kitchen, so tests are about the thing they are testing rather
+    # than about what the cook happens to own. Tests for the ownership constraint itself
+    # call store.set_appliances explicitly.
+    from cooking_assistant_ai.core.appliances import CATALOGUE
+
+    store.set_appliances(list(CATALOGUE))
     return ToolContext(session, clock, store)

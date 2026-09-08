@@ -269,7 +269,7 @@ class Orchestrator:
         raise asyncio.TimeoutError("orchestrator did not go idle")
 
     def state(self) -> Dict[str, Any]:
-        return state_dict(self.session, self.clock.now())
+        return state_dict(self.session, self.clock.now(), self.ctx.store)
 
     # -- main loop ----------------------------------------------------------
 

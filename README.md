@@ -709,6 +709,27 @@ yet running; `needed` — dashed outline, a loaded recipe wants it and nothing i
 than counting down to a time it cannot know. The same board goes into the model's context, so
 it knows the hob is full before promising anything.
 
+## Telling it what your kitchen has
+
+The Pantry screen has a **My kitchen** picker: tap an appliance to say whether you own it,
+and set the number of burners. Stored in `settings`, so it survives restarts.
+
+This is a constraint, not decoration:
+
+- the board draws only what you own, with exactly as many burner rings as you have
+- `add_task` **refuses** an appliance you do not own, with a reason that re-prompts —
+  *"this kitchen has no air fryer. It has: Oven, Hob, Rice cooker. Adapt the step to one of
+  those and try again."*
+- the model's context opens with what the kitchen has and an instruction not to plan
+  around anything else
+
+The one exception is deliberate: if a loaded recipe wants something you do not own, it is
+still drawn, dashed and in red, marked "you don't have this". Hiding it would leave the cook
+wondering why a step never appears.
+
+Defaults are oven, hob and microwave with four burners, which is a guess, not a claim — the
+picker is one tap away. `COOK_BURNERS` still sets the default for a fresh database.
+
 ## A name instead of an IP
 
 `https://kitchen.local:8000/` rather than an address that changes with the DHCP lease. The

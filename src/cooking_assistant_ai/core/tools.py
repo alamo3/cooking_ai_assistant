@@ -377,6 +377,15 @@ def add_task(ctx: ToolContext, label: Any = None, recipe_id: Any = None, step_id
 
     appl = scheduler.normalize_appliance(_str(appliance, "appliance"))
     auto = scheduler.is_generic_stovetop(appl)
+    if appl:
+        from cooking_assistant_ai.core.appliances import LABELS, owned
+
+        family = appl.split(":", 1)[0]
+        have = owned(ctx.store)
+        if family not in have:
+            names = ", ".join(LABELS.get(a, a) for a in have) or "nothing"
+            raise ToolError(f"this kitchen has no {LABELS.get(family, family).lower()}. "
+                            f"It has: {names}. Adapt the step to one of those and try again.")
     if scheduler.is_untimed(appl) and _str(must_finish_by, "must_finish_by"):
         raise ToolError(
             f"{appl} finishes when it finishes, so it cannot be held to must_finish_by. "

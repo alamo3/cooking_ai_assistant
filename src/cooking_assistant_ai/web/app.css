@@ -421,3 +421,26 @@ button.ghost { background: transparent; color: var(--muted); }
 @media (prefers-reduced-motion: reduce) {
   .appl.due, .appl.active .appl-icon .flame, .appl.active .appl-icon .steam { animation: none; }
 }
+
+/* ------------------------------------------------------------------- kitchen setup */
+.kitchen-setup { margin-bottom: 22px; }
+.kitchen-hint { font-size: 13px; margin: 0 0 12px; }
+.burner-pick { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
+.burner-pick input { width: 68px; }
+
+.appliance-picker { display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); }
+.appl-pick { background: var(--panel-2); border: 1px solid var(--line); border-radius: 16px;
+  padding: 13px 10px 12px; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  cursor: pointer; text-align: center; transition: border-color .2s, background .2s, opacity .2s; }
+.appl-pick .appl-icon { width: 42px; height: 42px; margin-bottom: 2px; }
+.appl-pick .appl-name { font-size: 12px; }
+.appl-pick:hover { border-color: var(--line-strong); }
+.appl-pick.off { opacity: .38; }
+.appl-pick.on { border-color: rgba(233,165,63,.5); background: rgba(233,165,63,.09); }
+.appl-pick.on .appl-icon { stroke: var(--accent); }
+.appl-pick.on .appl-name { color: var(--accent); }
+/* something is planned on an appliance the cook says they do not own */
+.appl.unowned { border-style: dashed; border-color: rgba(217,97,78,.5); }
+.appl.unowned .appl-icon { stroke: var(--bad); }
+.appl.unowned .appl-when { color: var(--bad); }

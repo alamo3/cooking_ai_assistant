@@ -17,12 +17,9 @@ from cooking_assistant_ai.core import scheduler
 from cooking_assistant_ai.core.fmt import fmt_dur, fmt_time
 from cooking_assistant_ai.model.types import Session, Task
 
-# Shown even when nothing is using them, so the cook can see what is free at a glance.
-# Anything else appears when a task uses it, or when a loaded recipe still needs it.
-ALWAYS_SHOWN = ("oven", "stovetop", "air_fryer")
-
 LABELS = {
     "oven": "Oven",
+    "stovetop": "Hob",
     "air_fryer": "Air fryer",
     "rice_cooker": "Rice cooker",
     "pressure_cooker": "Pressure cooker",
@@ -30,6 +27,48 @@ LABELS = {
     "grill": "Grill",
     "microwave": "Microwave",
 }
+
+# Everything the cook can say they own. Order is the order they are drawn.
+CATALOGUE = ("oven", "stovetop", "microwave", "air_fryer", "rice_cooker",
+             "pressure_cooker", "grill", "bread_maker")
+
+# What a kitchen probably has before anyone says otherwise.
+DEFAULT_OWNED = ("oven", "stovetop", "microwave")
+DEFAULT_BURNERS = 4
+
+
+def owned(store) -> List[str]:
+    """The appliances this kitchen actually has, in catalogue order."""
+    raw = store.get_setting("appliances", "") if store is not None else ""
+    if not raw:
+        return list(DEFAULT_OWNED)
+    chosen = {a.strip() for a in raw.split(",") if a.strip()}
+    return [a for a in CATALOGUE if a in chosen]
+
+
+def burner_count(store) -> int:
+    if store is None:
+        return scheduler.BURNERS
+    try:
+        n = int(store.get_setting("burners", "") or scheduler.BURNERS)
+    except ValueError:
+        return scheduler.BURNERS
+    return max(1, min(8, n))
+
+
+def describe_kitchen(store) -> str:
+    """One line for the model: what it is allowed to plan on."""
+    have = owned(store)
+    if not have:
+        return "KITCHEN: no appliances recorded."
+    bits = []
+    for a in have:
+        if a == "stovetop":
+            bits.append(f"a hob with {burner_count(store)} burners")
+        else:
+            bits.append(LABELS.get(a, a).lower())
+    return ("KITCHEN: this kitchen has " + ", ".join(bits) +
+            ". Do not plan a task on anything else; adapt the recipe to what is here.")
 
 
 def _label(slot: str) -> str:
@@ -55,7 +94,7 @@ def _needed_by_recipes(session: Session) -> Dict[str, List[str]]:
             if step.id in session.completed_steps or step.id in overlay.skipped_steps:
                 continue
             family = step.appliance.split(":", 1)[0]
-            if family in ALWAYS_SHOWN or family in scheduled:
+            if family in scheduled:
                 continue
             needed.setdefault(family, [])
             if recipe.title not in needed[family]:
@@ -63,23 +102,29 @@ def _needed_by_recipes(session: Session) -> Dict[str, List[str]]:
     return needed
 
 
-def _slots(session: Session) -> List[str]:
-    """Every appliance worth drawing: the standard set, whatever the tasks use, and whatever
-    the loaded recipes still need."""
-    slots: List[str] = ["oven"]
-    slots += [f"stovetop:{n}" for n in range(1, scheduler.BURNERS + 1)]
-    slots.append("air_fryer")
+def _slots(session: Session, store=None) -> List[str]:
+    """Every appliance worth drawing: the ones the cook owns, plus anything a task or a
+    loaded recipe reaches for anyway (which is worth seeing precisely because it is a
+    mismatch with the kitchen)."""
+    have = owned(store)
+    slots: List[str] = []
+    for family in have:
+        if family == "stovetop":
+            slots += [f"stovetop:{n}" for n in range(1, burner_count(store) + 1)]
+        else:
+            slots.append(family)
     for t in session.tasks.values():
         if not t.appliance:
             continue
         family = t.appliance.split(":", 1)[0]
-        if family in ALWAYS_SHOWN:
+        if family in have or t.appliance in slots:
             continue
-        if t.appliance not in slots:
-            slots.append(t.appliance)
+        slots.append(t.appliance)
+    present = {slot.split(":", 1)[0] for slot in slots}
     for family in _needed_by_recipes(session):
-        if family not in slots:
+        if family not in present:
             slots.append(family)
+            present.add(family)
     return slots
 
 
@@ -106,11 +151,15 @@ def _task_view(t: Task, now: datetime) -> Dict[str, Any]:
     }
 
 
-def board(session: Session, now: datetime) -> List[Dict[str, Any]]:
+def board(session: Session, now: datetime, store=None) -> List[Dict[str, Any]]:
     """One entry per appliance: what is on it now, and what is queued for it next."""
+    # The resolver assigns burners against a count; use the cook's, not the default.
+    scheduler.assign_burners(session, burner_count(store))
     out: List[Dict[str, Any]] = []
+    have = owned(store)
     needed = _needed_by_recipes(session)
-    for slot in _slots(session):
+    flagged: set = set()
+    for slot in _slots(session, store):
         mine = [t for t in session.tasks.values() if _owns(t, slot) and t.is_open]
         active = [t for t in mine if t.status == "active"]
         # Scheduled but not started; the soonest is the one worth showing.
@@ -123,8 +172,11 @@ def board(session: Session, now: datetime) -> List[Dict[str, Any]]:
             status = "due"          # should already be going
         elif upcoming:
             status = "reserved"
-        elif slot.split(":", 1)[0] in needed:
-            status = "needed"       # a loaded recipe wants it; nothing scheduled yet
+        elif slot.split(":", 1)[0] in needed and slot.split(":", 1)[0] not in flagged:
+            # Only the first free slot of a family carries the flag: a recipe that wants the
+            # hob needs *a* burner, not all of them.
+            status = "needed"
+            flagged.add(slot.split(":", 1)[0])
         else:
             status = "free"
 
@@ -145,8 +197,12 @@ def board(session: Session, now: datetime) -> List[Dict[str, Any]]:
             "untimed": bool(current and current.awaits_cook),
             "current": _task_view(current, now) if current else None,
             "next": _task_view(nxt, now) if nxt else None,
-            "needed_by": needed.get(slot.split(":", 1)[0], []),
-            "detail": _detail(current, nxt, now, needed.get(slot.split(":", 1)[0], [])),
+            "needed_by": needed.get(slot.split(":", 1)[0], []) if status == "needed" else [],
+            # Drawn but not owned: a recipe or the model reached for something you said you
+            # do not have, which the cook should see rather than have quietly hidden.
+            "owned": slot.split(":", 1)[0] in have,
+            "detail": _detail(current, nxt, now,
+                              needed.get(slot.split(":", 1)[0], []) if status == "needed" else []),
         })
     return out
 
@@ -171,9 +227,9 @@ def _detail(current: Optional[Task], nxt: Optional[Task], now: datetime,
     return "free"
 
 
-def render_board(session: Session, now: datetime) -> str:
+def render_board(session: Session, now: datetime, store=None) -> str:
     """Text form, for the model's context: it should know the hob is full before promising."""
-    rows = board(session, now)
+    rows = board(session, now, store)
     busy = [r for r in rows if r["status"] != "free"]
     if not busy:
         return "APPLIANCES: all free"

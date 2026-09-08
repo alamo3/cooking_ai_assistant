@@ -273,6 +273,11 @@ class RecipeRef(BaseModel):
     recipe: str
 
 
+class KitchenChoice(BaseModel):
+    appliances: List[str]
+    burners: Optional[int] = None
+
+
 class DietChoice(BaseModel):
     diet: str
 
@@ -638,6 +643,30 @@ def create_app(settings: Optional[Settings] = None, llm: Optional[LLM] = None,
     async def delete_recipe(recipe_id: str) -> None:
         if not store.delete_recipe(recipe_id):
             raise HTTPException(404, "no such recipe")
+
+    @app.get("/kitchen")
+    async def get_kitchen() -> Dict[str, Any]:
+        from cooking_assistant_ai.core.appliances import (CATALOGUE, LABELS, burner_count,
+                                                          owned)
+
+        have = owned(store)
+        return {
+            "appliances": have,
+            "burners": burner_count(store),
+            "options": [{"id": a, "label": LABELS.get(a, a), "owned": a in have}
+                        for a in CATALOGUE],
+        }
+
+    @app.put("/kitchen")
+    async def put_kitchen(body: KitchenChoice) -> Dict[str, Any]:
+        try:
+            store.set_appliances(body.appliances, body.burners)
+        except (ValueError, TypeError) as e:
+            raise HTTPException(422, str(e))
+        # Push the new board to every tablet: the kitchen just changed shape.
+        for live in manager.sessions.values():
+            await live.broadcast({"type": "state", **live.orchestrator.state()})
+        return await get_kitchen()
 
     @app.get("/diet")
     async def get_diet() -> Dict[str, Any]:

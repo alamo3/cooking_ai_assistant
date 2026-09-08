@@ -249,7 +249,7 @@ def render_state(session: Session, now: datetime) -> str:
     ])
 
 
-def state_dict(session: Session, now: datetime) -> Dict[str, Any]:
+def state_dict(session: Session, now: datetime, store=None) -> Dict[str, Any]:
     """Structured state for the tablet UI (websocket 'state' message)."""
     from cooking_assistant_ai.core.plan import build_plan, plan_summary
 
@@ -259,7 +259,7 @@ def state_dict(session: Session, now: datetime) -> Dict[str, Any]:
     plan["summary"] = plan_summary(session, now)
     return {
         "plan": plan,
-        "appliances": appliance_board(session, now),
+        "appliances": appliance_board(session, now, store),
         "now": now.isoformat(),
         "target_plating": session.target_plating.isoformat() if session.target_plating else None,
         "proactivity": session.proactivity,

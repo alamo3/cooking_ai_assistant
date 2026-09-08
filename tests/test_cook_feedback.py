@@ -165,9 +165,21 @@ def test_the_board_shows_what_is_on_what(ctx):
 
 
 def test_an_idle_kitchen_says_so(ctx):
+    """Nothing loaded and nothing planned: every appliance is genuinely free."""
     from cooking_assistant_ai.core.appliances import render_board
+    from cooking_assistant_ai.model.types import Session
 
-    assert render_board(ctx.session, ctx.clock.now()) == "APPLIANCES: all free"
+    empty = Session(id="empty", started_at=ctx.clock.now())
+    assert render_board(empty, ctx.clock.now(), ctx.store) == "APPLIANCES: all free"
+
+
+def test_an_owned_appliance_a_recipe_wants_still_reads_as_needed(ctx):
+    """Owning a rice cooker must not cost you the 'needed for X' signal."""
+    from cooking_assistant_ai.core.appliances import board
+
+    rows = {r["slot"]: r for r in board(ctx.session, ctx.clock.now(), ctx.store)}
+    assert rows["air_fryer"]["status"] == "needed"      # r003 wants it, nothing planned
+    assert rows["air_fryer"]["owned"] is True
 
 
 def test_the_board_reaches_the_tablet(ctx):
@@ -211,6 +223,7 @@ def test_the_board_shows_appliances_a_recipe_needs_before_anything_is_planned(ct
 
 
 def test_a_finished_step_stops_asking_for_its_appliance(ctx):
+    """An owned appliance goes back to free rather than vanishing off the board."""
     from cooking_assistant_ai.core.appliances import board
 
     dispatch(ctx, "create_recipe", {
@@ -218,19 +231,100 @@ def test_a_finished_step_stops_asking_for_its_appliance(ctx):
         "steps": [{"text": "Warm the soup.", "duration_s": 120, "appliance": "microwave"},
                   {"text": "Serve.", "duration_s": 60}]})
     step = ctx.store.get_recipe("r004").steps[0]
-    assert any(r["slot"] == "microwave" for r in board(ctx.session, ctx.clock.now()))
 
+    status = lambda: {r["slot"]: r["status"] for r in board(ctx.session, ctx.clock.now(), ctx.store)}
+    assert status()["microwave"] == "needed"
     dispatch(ctx, "mark_complete", {"step_id": step.id})
-    assert not any(r["slot"] == "microwave" for r in board(ctx.session, ctx.clock.now()))
+    assert status()["microwave"] == "free"
 
 
-def test_an_appliance_listed_as_needed_is_not_also_listed_as_free(ctx):
-    from cooking_assistant_ai.core.appliances import render_board
+def test_an_appliance_is_never_both_needed_and_free(ctx):
+    from cooking_assistant_ai.core.appliances import board, render_board
 
     dispatch(ctx, "create_recipe", {
         "title": "Zap", "servings": 1, "ingredients": ["soup", "bread"],
         "steps": [{"text": "Warm the soup.", "duration_s": 120, "appliance": "microwave"},
                   {"text": "Serve.", "duration_s": 60}]})
-    text = render_board(ctx.session, ctx.clock.now())
-    assert text.count("Microwave") == 1, "listed twice"
-    assert "Microwave" not in text.split("free:")[-1]
+    rows = board(ctx.session, ctx.clock.now(), ctx.store)
+    assert len({r["slot"] for r in rows}) == len(rows), "an appliance is drawn twice"
+
+    text = render_board(ctx.session, ctx.clock.now(), ctx.store)
+    free_list = text.split("free:")[-1] if "free:" in text else ""
+    for r in rows:
+        if r["status"] == "needed":
+            assert r["label"] not in free_list, f"{r['label']} is listed as needed and free"
+
+
+# ------------------------------------------------------------------- my kitchen
+
+def test_the_board_only_draws_what_the_cook_owns(ctx):
+    from cooking_assistant_ai.core.appliances import board
+
+    ctx.store.set_appliances(["oven", "stovetop", "rice_cooker"], burners=2)
+    slots = [r["slot"] for r in board(ctx.session, ctx.clock.now(), ctx.store)]
+    assert slots[:4] == ["oven", "stovetop:1", "stovetop:2", "rice_cooker"]
+    assert "stovetop:3" not in slots, "drew burners this hob does not have"
+    assert not any(s == "microwave" for s in slots)
+
+
+def test_a_task_on_an_appliance_you_do_not_have_is_refused(ctx):
+    ctx.store.set_appliances(["oven", "stovetop"])
+    r = dispatch(ctx, "add_task", {"label": "wings", "appliance": "air_fryer", "duration_s": 900})
+    assert not r.ok
+    assert "no air fryer" in r.reason and "Oven, Hob" in r.reason
+    assert dispatch(ctx, "add_task", {"label": "roast", "appliance": "oven",
+                                      "duration_s": 900}).ok
+
+
+def test_the_model_is_told_what_the_kitchen_has(ctx):
+    from cooking_assistant_ai.core.appliances import describe_kitchen
+
+    ctx.store.set_appliances(["oven", "stovetop", "rice_cooker"], burners=2)
+    text = describe_kitchen(ctx.store)
+    assert "a hob with 2 burners" in text and "rice cooker" in text
+    assert "air fryer" not in text
+    assert "Do not plan a task on anything else" in text
+
+
+def test_an_unowned_appliance_a_recipe_wants_is_still_shown(ctx):
+    """Hiding the mismatch would leave the cook wondering why a step never appears."""
+    from cooking_assistant_ai.core.appliances import board
+
+    ctx.store.set_appliances(["oven", "stovetop"])
+    rows = {r["slot"]: r for r in board(ctx.session, ctx.clock.now(), ctx.store)}
+    assert rows["air_fryer"]["status"] == "needed"    # r003 wants one
+    assert rows["air_fryer"]["owned"] is False
+
+
+def test_unknown_appliances_are_rejected(ctx):
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="unknown appliance"):
+        ctx.store.set_appliances(["oven", "teleporter"])
+
+
+def test_the_kitchen_survives_and_defaults_sanely(tmp_path):
+    from cooking_assistant_ai.core.appliances import DEFAULT_OWNED, burner_count, owned
+    from cooking_assistant_ai.storage.db import Store
+
+    path = str(tmp_path / "k.db")
+    fresh = Store(path)
+    assert owned(fresh) == list(DEFAULT_OWNED) and burner_count(fresh) == 4
+    fresh.set_appliances(["oven", "grill"], burners=6)
+    assert owned(Store(path)) == ["oven", "grill"] and burner_count(Store(path)) == 6
+
+
+def test_a_recipe_wanting_the_hob_flags_one_burner_not_all(ctx):
+    """The hob is a pool: needing it means needing *a* ring."""
+    from cooking_assistant_ai.core.appliances import board
+
+    ctx.store.set_appliances(["oven", "stovetop"], burners=5)
+    dispatch(ctx, "load_recipe", {"recipe": "r001"})
+    rows = board(ctx.session, ctx.clock.now(), ctx.store)
+    burners = [r for r in rows if r["slot"].startswith("stovetop:")]
+    assert len(burners) == 5
+    assert [r["status"] for r in burners].count("needed") == 1
+    assert all(r["status"] == "free" for r in burners[1:])
+    # and no stray bare "stovetop" slot alongside the numbered ones
+    assert [r["slot"] for r in rows].count("stovetop") == 0
+    assert len({r["slot"] for r in rows}) == len(rows)

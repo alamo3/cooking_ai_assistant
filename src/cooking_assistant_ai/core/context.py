@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List
 
-from cooking_assistant_ai.core.appliances import render_board
+from cooking_assistant_ai.core.appliances import describe_kitchen, render_board
 from cooking_assistant_ai.core.diet import describe
 from cooking_assistant_ai.core.plan import render_cook_plan
 from cooking_assistant_ai.core.render import (
@@ -65,7 +65,8 @@ def _state_blocks(session: Session, now: datetime, store=None) -> str:
         blocks.append("CHANGES MADE\n" + changes)
     blocks.append("TIMELINE\n" + render_timeline(session, now))
     blocks.append(render_cook_plan(session, now))
-    blocks.append(render_board(session, now))
+    blocks.append(describe_kitchen(store))
+    blocks.append(render_board(session, now, store))
     blocks.append(render_timers(session, now))
     blocks.append(render_progress(session))
     return "\n\n".join(blocks)

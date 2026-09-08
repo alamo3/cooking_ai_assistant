@@ -74,6 +74,24 @@ class Store:
     def diet(self) -> str:
         return self.get_setting("diet", "none")
 
+    @property
+    def appliances(self) -> List[str]:
+        from cooking_assistant_ai.core.appliances import owned
+
+        return owned(self)
+
+    def set_appliances(self, names: List[str], burners: Optional[int] = None) -> List[str]:
+        from cooking_assistant_ai.core.appliances import CATALOGUE
+
+        unknown = [n for n in names if n not in CATALOGUE]
+        if unknown:
+            raise ValueError(f"unknown appliance(s): {', '.join(unknown)}. "
+                             f"Known: {', '.join(CATALOGUE)}")
+        self.set_setting("appliances", ",".join(n for n in CATALOGUE if n in set(names)))
+        if burners is not None:
+            self.set_setting("burners", str(max(1, min(8, int(burners)))))
+        return self.appliances
+
     def set_diet(self, diet: str) -> str:
         from cooking_assistant_ai.core.diet import DIETS
 
