@@ -980,7 +980,10 @@
       card.appendChild(name);
 
       const busy = a.current || a.next;
-      card.appendChild(el("div", "appl-what", busy ? busy.label : "free"));
+      const what = busy ? busy.label
+                        : (a.status === "needed" ? (a.needed_by || []).join(", ") || "needed" : "free");
+      card.appendChild(el("div", "appl-what", what));
+      if (!busy && a.status === "needed") card.appendChild(el("div", "appl-when", "not scheduled yet"));
       if (busy) {
         let when = "";
         if (a.current && a.current.awaits_cook) when = "tell me when it's done";

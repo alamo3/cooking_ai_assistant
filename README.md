@@ -684,8 +684,10 @@ imports as untimed without anyone intervening.
 
 [appliances.py](src/cooking_assistant_ai/core/appliances.py) turns the task list inside out
 to answer the question a cook actually asks: is that ring free, and what is the oven doing?
-Oven, every burner and the air fryer are always drawn so idle ones are visible at a glance;
-anything else a recipe calls for appears when a task needs it.
+Oven, every burner and the air fryer are always drawn so idle ones are visible at a glance.
+Anything else — rice cooker, microwave, grill, pressure cooker, bread maker — appears when a
+task uses it, **or when a loaded recipe still needs it**, so the board answers "what is this
+meal going to use" and not merely "what has been scheduled".
 
 ```
 Oven at 425°F: chicken roast at 6:05 PM
@@ -694,8 +696,9 @@ Rice cooker: rice - tell me when it's done
 free: Burner 2, Burner 3, Burner 4, Air fryer
 ```
 
-Four states: `active` (green, gently pulsing), `due` (amber, should already be going),
-`reserved`, and `free` (dimmed). An untimed appliance says "tell me when it's done" rather
+Five states: `active` (green, gently pulsing), `due` (amber, should already be going),
+`reserved`, `needed` (dashed outline: a loaded recipe wants it, nothing scheduled yet), and
+`free` (dimmed). An untimed appliance says "tell me when it's done" rather
 than counting down to a time it cannot know. The same board goes into the model's context, so
 it knows the hob is full before promising anything.
 

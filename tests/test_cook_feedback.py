@@ -184,3 +184,53 @@ def test_the_hostname_is_forgiving():
 
     assert hostname("kitchen") == hostname("kitchen.local") == "kitchen.local"
     assert hostname("Chef.Local.") == "chef.local"
+
+
+def test_the_board_shows_appliances_a_recipe_needs_before_anything_is_planned(ctx):
+    """'What's expected to be in use' means the recipe's needs, not only the schedule."""
+    from cooking_assistant_ai.core.appliances import board, render_board
+
+    dispatch(ctx, "create_recipe", {
+        "title": "Steamed Pudding", "servings": 2, "ingredients": ["flour", "butter"],
+        "steps": [{"text": "Mix the batter.", "duration_s": 300},
+                  {"text": "Steam in the rice cooker.", "duration_s": 2400, "appliance": "rice_cooker"},
+                  {"text": "Blast the sauce.", "duration_s": 60, "appliance": "microwave"}]})
+
+    rows = {r["slot"]: r for r in board(ctx.session, ctx.clock.now())}
+    assert rows["rice_cooker"]["status"] == "needed"
+    assert rows["rice_cooker"]["needed_by"] == ["Steamed Pudding"]
+    assert rows["microwave"]["status"] == "needed"
+    assert "needed for Steamed Pudding" in render_board(ctx.session, ctx.clock.now())
+
+    # once a task claims it, it is scheduled rather than merely needed
+    assert dispatch(ctx, "add_task", {"label": "steam", "recipe_id": "r004",
+                                      "appliance": "rice_cooker", "duration_s": 2400}).ok
+    rows = {r["slot"]: r for r in board(ctx.session, ctx.clock.now())}
+    assert rows["rice_cooker"]["status"] in ("due", "reserved")
+    assert rows["rice_cooker"]["needed_by"] == []
+
+
+def test_a_finished_step_stops_asking_for_its_appliance(ctx):
+    from cooking_assistant_ai.core.appliances import board
+
+    dispatch(ctx, "create_recipe", {
+        "title": "Zap", "servings": 1, "ingredients": ["soup", "bread"],
+        "steps": [{"text": "Warm the soup.", "duration_s": 120, "appliance": "microwave"},
+                  {"text": "Serve.", "duration_s": 60}]})
+    step = ctx.store.get_recipe("r004").steps[0]
+    assert any(r["slot"] == "microwave" for r in board(ctx.session, ctx.clock.now()))
+
+    dispatch(ctx, "mark_complete", {"step_id": step.id})
+    assert not any(r["slot"] == "microwave" for r in board(ctx.session, ctx.clock.now()))
+
+
+def test_an_appliance_listed_as_needed_is_not_also_listed_as_free(ctx):
+    from cooking_assistant_ai.core.appliances import render_board
+
+    dispatch(ctx, "create_recipe", {
+        "title": "Zap", "servings": 1, "ingredients": ["soup", "bread"],
+        "steps": [{"text": "Warm the soup.", "duration_s": 120, "appliance": "microwave"},
+                  {"text": "Serve.", "duration_s": 60}]})
+    text = render_board(ctx.session, ctx.clock.now())
+    assert text.count("Microwave") == 1, "listed twice"
+    assert "Microwave" not in text.split("free:")[-1]

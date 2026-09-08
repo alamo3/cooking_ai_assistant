@@ -371,6 +371,8 @@ button.ghost { background: transparent; color: var(--muted); }
 .appl.due { border-color: rgba(226,145,63,.55); background: linear-gradient(rgba(226,145,63,.13), transparent); }
 .appl.due .appl-name { color: var(--warn); }
 .appl.reserved { border-color: var(--line-strong); }
+.appl.needed { border-style: dashed; border-color: var(--line-strong); opacity: .78; }
+.appl.needed .appl-what { color: var(--muted); font-weight: 500; }
 .appl.untimed .appl-when { color: var(--warn); }
 
 /* a quiet pulse so an active hob reads as "on" from across the kitchen */

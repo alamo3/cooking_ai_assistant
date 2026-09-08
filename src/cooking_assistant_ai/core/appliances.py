@@ -5,7 +5,8 @@ answer the question a cook actually asks while standing in the kitchen: is that 
 and what is the oven doing? This turns the task list inside out to answer it per appliance
 rather than per dish.
 
-Derived entirely from tasks, like everything else here, so it cannot drift.
+Derived entirely from tasks and loaded recipes, like everything else here, so it
+cannot drift.
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from cooking_assistant_ai.core.fmt import fmt_dur, fmt_time
 from cooking_assistant_ai.model.types import Session, Task
 
 # Shown even when nothing is using them, so the cook can see what is free at a glance.
-# Anything else a recipe calls for is added when a task needs it.
+# Anything else appears when a task uses it, or when a loaded recipe still needs it.
 ALWAYS_SHOWN = ("oven", "stovetop", "air_fryer")
 
 LABELS = {
@@ -37,8 +38,34 @@ def _label(slot: str) -> str:
     return LABELS.get(slot, slot.replace("_", " ").capitalize())
 
 
+def _needed_by_recipes(session: Session) -> Dict[str, List[str]]:
+    """Appliances the loaded recipes call for but nothing has been scheduled on yet.
+
+    The board is otherwise built from tasks, which means a recipe that wants the rice cooker
+    shows nothing until the model plans one. The cook asked what is *expected* to be in use,
+    so an appliance a loaded recipe still needs belongs on the board even with no task.
+    """
+    scheduled = {t.appliance.split(":", 1)[0] for t in session.tasks.values() if t.appliance}
+    needed: Dict[str, List[str]] = {}
+    for recipe in session.recipes.values():
+        overlay = session.overlays[recipe.id]
+        for step in list(recipe.steps) + list(overlay.added_steps):
+            if not step.appliance:
+                continue
+            if step.id in session.completed_steps or step.id in overlay.skipped_steps:
+                continue
+            family = step.appliance.split(":", 1)[0]
+            if family in ALWAYS_SHOWN or family in scheduled:
+                continue
+            needed.setdefault(family, [])
+            if recipe.title not in needed[family]:
+                needed[family].append(recipe.title)
+    return needed
+
+
 def _slots(session: Session) -> List[str]:
-    """Every appliance worth drawing: the standard set, plus whatever the tasks need."""
+    """Every appliance worth drawing: the standard set, whatever the tasks use, and whatever
+    the loaded recipes still need."""
     slots: List[str] = ["oven"]
     slots += [f"stovetop:{n}" for n in range(1, scheduler.BURNERS + 1)]
     slots.append("air_fryer")
@@ -50,6 +77,9 @@ def _slots(session: Session) -> List[str]:
             continue
         if t.appliance not in slots:
             slots.append(t.appliance)
+    for family in _needed_by_recipes(session):
+        if family not in slots:
+            slots.append(family)
     return slots
 
 
@@ -79,6 +109,7 @@ def _task_view(t: Task, now: datetime) -> Dict[str, Any]:
 def board(session: Session, now: datetime) -> List[Dict[str, Any]]:
     """One entry per appliance: what is on it now, and what is queued for it next."""
     out: List[Dict[str, Any]] = []
+    needed = _needed_by_recipes(session)
     for slot in _slots(session):
         mine = [t for t in session.tasks.values() if _owns(t, slot) and t.is_open]
         active = [t for t in mine if t.status == "active"]
@@ -92,6 +123,8 @@ def board(session: Session, now: datetime) -> List[Dict[str, Any]]:
             status = "due"          # should already be going
         elif upcoming:
             status = "reserved"
+        elif slot.split(":", 1)[0] in needed:
+            status = "needed"       # a loaded recipe wants it; nothing scheduled yet
         else:
             status = "free"
 
@@ -112,12 +145,14 @@ def board(session: Session, now: datetime) -> List[Dict[str, Any]]:
             "untimed": bool(current and current.awaits_cook),
             "current": _task_view(current, now) if current else None,
             "next": _task_view(nxt, now) if nxt else None,
-            "detail": _detail(current, nxt, now),
+            "needed_by": needed.get(slot.split(":", 1)[0], []),
+            "detail": _detail(current, nxt, now, needed.get(slot.split(":", 1)[0], [])),
         })
     return out
 
 
-def _detail(current: Optional[Task], nxt: Optional[Task], now: datetime) -> str:
+def _detail(current: Optional[Task], nxt: Optional[Task], now: datetime,
+            needed_by: Optional[List[str]] = None) -> str:
     if current is not None:
         if current.awaits_cook:
             return f"{current.label} - tell me when it's done"
@@ -131,6 +166,8 @@ def _detail(current: Optional[Task], nxt: Optional[Task], now: datetime) -> str:
         if nxt.start_at:
             return f"{nxt.label} at {fmt_time(nxt.start_at)}"
         return nxt.label
+    if needed_by:
+        return "needed for " + ", ".join(needed_by)
     return "free"
 
 
@@ -145,7 +182,8 @@ def render_board(session: Session, now: datetime) -> str:
         if r["status"] == "free":
             continue
         temp = f" at {r['temp_f']}°F" if r["temp_f"] else ""
-        lines.append(f"  {r['label']}{temp}: {r['detail']}")
+        note = " (nothing scheduled on it yet)" if r["status"] == "needed" else ""
+        lines.append(f"  {r['label']}{temp}: {r['detail']}{note}")
     free = [r["label"] for r in rows if r["status"] == "free"]
     if free:
         lines.append("  free: " + ", ".join(free))
