@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from cooking_assistant_ai.api import admin
+from cooking_assistant_ai.api.mdns import Advertiser
 from cooking_assistant_ai.core.fmt import fmt_dur, fmt_time, parse_clock_time
 from cooking_assistant_ai.core.render import recipe_view
 from cooking_assistant_ai.core.tools import dispatch
@@ -59,6 +60,11 @@ class Settings:
     backend: str = os.environ.get("COOK_LLM", DEFAULT_BACKEND)  # cloud | openrouter | ollama
     vad: str = os.environ.get("COOK_VAD", "silero")
     barge_in: str = os.environ.get("COOK_BARGE_IN", "voice")  # voice | transcript | off
+    # Off by default: create_app is used by tests and embedded callers, and starting an
+    # mDNS responder for each of those is slow and pointless. `serve` turns it on.
+    mdns: bool = os.environ.get("COOK_MDNS", "0") == "1"
+    port: int = int(os.environ.get("COOK_PORT", "8000"))   # only for what mDNS advertises
+    https: bool = os.environ.get("COOK_HTTPS", "1") != "0"
     # Session snapshots: how often to write, and how stale a snapshot may be and still be
     # worth resuming. Twelve hours covers "the power went out during dinner"; anything older
     # is last week's cook and only gets in the way.
@@ -503,7 +509,14 @@ def create_app(settings: Optional[Settings] = None, llm: Optional[LLM] = None,
                 except Exception as e:  # server may not be up yet; first turn will retry
                     log.warning("%s warm-up failed: %s", name, e)
         saver = asyncio.create_task(autosave()) if settings.autosave_s > 0 else None
+        advert = None
+        if settings.mdns:
+            advert = Advertiser(settings.port, https=settings.https)
+            if await advert.start_async():
+                print(f"Reachable at https://{advert.host}:{settings.port}/")
         yield
+        if advert:
+            await advert.stop_async()
         if saver:
             saver.cancel()
         manager.persist()  # a clean shutdown still snapshots, so a restart loses nothing

@@ -680,6 +680,49 @@ since the planner interleaves dishes using those numbers and a null makes a reci
 unschedulable. The extractor also recognises the untimed appliances, so a rice cooker recipe
 imports as untimed without anyone intervening.
 
+## The appliance board
+
+[appliances.py](src/cooking_assistant_ai/core/appliances.py) turns the task list inside out
+to answer the question a cook actually asks: is that ring free, and what is the oven doing?
+Oven, every burner and the air fryer are always drawn so idle ones are visible at a glance;
+anything else a recipe calls for appears when a task needs it.
+
+```
+Oven at 425°F: chicken roast at 6:05 PM
+Burner 1: sear - 5m left
+Rice cooker: rice - tell me when it's done
+free: Burner 2, Burner 3, Burner 4, Air fryer
+```
+
+Four states: `active` (green, gently pulsing), `due` (amber, should already be going),
+`reserved`, and `free` (dimmed). An untimed appliance says "tell me when it's done" rather
+than counting down to a time it cannot know. The same board goes into the model's context, so
+it knows the hob is full before promising anything.
+
+## A name instead of an IP
+
+`https://kitchen.local:8000/` rather than an address that changes with the DHCP lease. The
+server advertises the name over mDNS (`COOK_HOSTNAME` to change it, `COOK_MDNS=0` to turn it
+off) and it is added to the TLS certificate, without which the tablet would get a name
+mismatch — a worse warning than the IP ever produced.
+
+```bash
+uv sync --extra mdns      # zeroconf; without it the name is skipped and the IP still works
+```
+
+No router configuration and no DNS server needed, but **resolution is the client's job**.
+Windows, macOS and iOS do it natively. Android has since 12 and Chrome/WebView usually
+follow, but an older tablet may not, and Fully Kiosk depends on the system resolver. Two
+fallbacks if `kitchen.local` does not resolve on your tablet:
+
+- `<computername>.local` already works without any of this — Windows registers it itself, and
+  it was already in the certificate.
+- A DHCP reservation on the router, which fixes the IP and often gives you a name too. Least
+  elegant, most reliable.
+
+The advertiser is started on a worker thread: python-zeroconf refuses to be constructed
+inside a running event loop and raises with an empty message when you try.
+
 ## Speech
 
 STT defaults to the whisper.cpp checkout in `whisper.cpp/`: the app spawns

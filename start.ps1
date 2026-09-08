@@ -160,8 +160,9 @@ if ($NoVoice) {
 $scheme = if ($Http) { "http" } else { "https" }
 $lan = Get-LanAddress
 Write-Host ""
+$mdnsName = if ($env:COOK_HOSTNAME) { $env:COOK_HOSTNAME } else { "kitchen" }
 Write-Host "  This PC:  ${scheme}://localhost:$Port/"
-if ($lan) { Write-Host "  Tablet:   ${scheme}://${lan}:$Port/" }
+if ($lan) { Write-Host "  Tablet:   ${scheme}://${mdnsName}.local:$Port/   (or ${scheme}://${lan}:$Port/)" }
 if ($Http) {
     Write-Host "  NOTE: plain HTTP, so the tablet microphone will not work. Drop -Http for voice."
 } else {

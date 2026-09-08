@@ -224,15 +224,23 @@ def main(argv: Optional[List[str]] = None) -> None:
             os.environ["COOK_DB"] = args.db
         if args.no_llm:
             os.environ["COOK_NO_LLM"] = "1"
+        # Actually serving, so a fixed name is worth advertising. COOK_MDNS=0 opts out.
+        os.environ.setdefault("COOK_MDNS", "1")
+        os.environ["COOK_PORT"] = str(args.port)
+        os.environ["COOK_HTTPS"] = "1" if (args.https or args.cert) else "0"
         ssl_args = {}
         if args.https or args.cert:
             if args.cert and args.key:
                 cert, key = Path(args.cert), Path(args.key)
             else:
+                from cooking_assistant_ai.api.mdns import hostname
                 from cooking_assistant_ai.api.tls import ensure_cert, lan_addresses
 
-                cert, key = ensure_cert()
+                # The friendly name goes in the certificate too: without it the tablet
+                # gets a name mismatch, which is a worse warning than the IP produced.
+                cert, key = ensure_cert(extra_hosts=[hostname()])
                 lan = lan_addresses()  # best first: the LAN, not a VPN tunnel
+                print(f"  Tablet: https://{hostname()}:{args.port}/  (if mDNS resolves there)")
                 print(f"TLS on (self-signed certificate at {cert}).")
                 for a in lan:
                     print(f"  Tablet: https://{a}:{args.port}/")

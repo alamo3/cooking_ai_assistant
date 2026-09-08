@@ -136,3 +136,51 @@ def test_the_model_is_told_to_search_before_inventing():
     assert "find_recipes" in SYSTEM_PROMPT and "import_recipe" in SYSTEM_PROMPT
     assert SYSTEM_PROMPT.index("find_recipes") < SYSTEM_PROMPT.index("create_recipe")
     assert "rice cooker" in SYSTEM_PROMPT and "never set a timer for one" in SYSTEM_PROMPT
+
+
+# ------------------------------------------------------------------- the appliance board
+
+def test_the_board_shows_what_is_on_what(ctx):
+    from cooking_assistant_ai.core.appliances import board, render_board
+
+    dispatch(ctx, "load_recipe", {"recipe": "r001"})
+    dispatch(ctx, "add_task", {"label": "chicken roast", "recipe_id": "r001",
+                               "step_ids": ["r001-s5"], "appliance": "oven",
+                               "temp_f": 425, "duration_s": 1500})
+    dispatch(ctx, "add_task", {"label": "sear", "recipe_id": "r001", "step_ids": ["r001-s3"],
+                               "appliance": "stovetop", "duration_s": 300, "before": "chicken roast"})
+    dispatch(ctx, "add_task", {"label": "rice", "appliance": "rice cooker", "duration_s": 1800})
+    dispatch(ctx, "start_task", {"task_id": "sear"})
+    dispatch(ctx, "start_task", {"task_id": "rice"})
+
+    rows = {r["slot"]: r for r in board(ctx.session, ctx.clock.now())}
+    assert rows["stovetop:1"]["status"] == "active" and rows["stovetop:1"]["current"]["label"] == "sear"
+    assert rows["oven"]["status"] == "reserved" and rows["oven"]["temp_f"] == 425
+    assert rows["stovetop:4"]["status"] == "free" and rows["stovetop:4"]["current"] is None
+    # an untimed appliance says so rather than counting down to a time it cannot know
+    assert rows["rice_cooker"]["untimed"] and "tell me when" in rows["rice_cooker"]["detail"]
+
+    text = render_board(ctx.session, ctx.clock.now())
+    assert "Burner 1" in text and "Oven at 425" in text and "free: Burner 2" in text
+
+
+def test_an_idle_kitchen_says_so(ctx):
+    from cooking_assistant_ai.core.appliances import render_board
+
+    assert render_board(ctx.session, ctx.clock.now()) == "APPLIANCES: all free"
+
+
+def test_the_board_reaches_the_tablet(ctx):
+    from cooking_assistant_ai.core.render import state_dict
+
+    dispatch(ctx, "add_task", {"label": "rice", "appliance": "rice_cooker", "duration_s": 1800})
+    rows = state_dict(ctx.session, ctx.clock.now())["appliances"]
+    assert any(r["slot"] == "rice_cooker" for r in rows)
+    assert any(r["slot"] == "oven" for r in rows), "standard appliances show even when idle"
+
+
+def test_the_hostname_is_forgiving():
+    from cooking_assistant_ai.api.mdns import hostname
+
+    assert hostname("kitchen") == hostname("kitchen.local") == "kitchen.local"
+    assert hostname("Chef.Local.") == "chef.local"

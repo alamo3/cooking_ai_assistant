@@ -385,6 +385,7 @@
     if (document.activeElement !== p) p.value = s.proactivity;
     renderPlan(s.plan);
     renderPlanSummary(s.plan.summary);
+    renderAppliances(s.appliances);
     renderRecipes(s.progress.recipes);
     if (screen === "recipes") renderChoices();
     $("#recipes-count").textContent = s.progress.recipes.length ? `(${s.progress.recipes.length})` : "";
@@ -962,6 +963,43 @@
     if (app.state && app.state.timers.length) renderTimers();
   }
 
+
+
+  // ------------------------------------------------------------ appliance board
+  // Answers the question you actually ask standing in the kitchen: is that ring free,
+  // and what is the oven doing?
+  function renderAppliances(rows) {
+    const box = $("#appliances");
+    if (!rows || !rows.length) { box.hidden = true; box.innerHTML = ""; return; }
+    box.hidden = false;
+    box.innerHTML = "";
+    for (const a of rows) {
+      const card = el("div", "appl " + a.status + (a.untimed ? " untimed" : ""));
+      const name = el("div", "appl-name", a.label);
+      if (a.temp_f) name.appendChild(el("span", "appl-temp", a.temp_f + "°F"));
+      card.appendChild(name);
+
+      const busy = a.current || a.next;
+      card.appendChild(el("div", "appl-what", busy ? busy.label : "free"));
+      if (busy) {
+        let when = "";
+        if (a.current && a.current.awaits_cook) when = "tell me when it's done";
+        else if (a.current && a.current.remaining_s != null) when = fmtLeft(a.current.remaining_s) + " left";
+        else if (a.next && a.next.starts_in_s != null) {
+          when = a.next.starts_in_s <= 0 ? "start now" : "in " + fmtLeft(a.next.starts_in_s);
+        }
+        if (when) card.appendChild(el("div", "appl-when", when));
+      }
+      box.appendChild(card);
+    }
+  }
+
+  function fmtLeft(s) {
+    if (s == null) return "";
+    if (s < 60) return Math.max(0, Math.round(s)) + "s";
+    const m = Math.round(s / 60);
+    return m < 60 ? m + "m" : Math.floor(m / 60) + "h " + (m % 60) + "m";
+  }
 
   // ------------------------------------------------------------ server panel
   // The server cannot restart itself, so this asks the supervisor (start.ps1) for a fresh

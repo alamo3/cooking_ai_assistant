@@ -351,3 +351,30 @@ input[type=checkbox] { accent-color: var(--accent); width: 18px; height: 18px; }
 .server-actions { display: flex; gap: 8px; margin-top: 14px; }
 .server-actions button { flex: 1; }
 button.ghost { background: transparent; color: var(--muted); }
+
+/* ------------------------------------------------------------------- appliance board */
+.appliances { display: grid; gap: 8px; margin-bottom: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); }
+.appl { background: var(--panel-2); border: 1px solid var(--line); border-radius: 14px;
+  padding: 10px 11px; min-height: 68px; display: flex; flex-direction: column; gap: 3px;
+  transition: border-color .2s, background .2s; }
+.appl .appl-name { font-size: 12px; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--muted); display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.appl .appl-temp { color: var(--accent); font-weight: 600; letter-spacing: 0; text-transform: none; }
+.appl .appl-what { font-size: 14px; color: var(--text); font-weight: 600; line-height: 1.25; }
+.appl .appl-when { font-size: 12px; color: var(--muted); }
+
+.appl.free { opacity: .5; }
+.appl.free .appl-what { color: var(--muted); font-weight: 500; }
+.appl.active { border-color: rgba(143,191,127,.5); background: linear-gradient(var(--good-soft), transparent); }
+.appl.active .appl-name { color: var(--good); }
+.appl.due { border-color: rgba(226,145,63,.55); background: linear-gradient(rgba(226,145,63,.13), transparent); }
+.appl.due .appl-name { color: var(--warn); }
+.appl.reserved { border-color: var(--line-strong); }
+.appl.untimed .appl-when { color: var(--warn); }
+
+/* a quiet pulse so an active hob reads as "on" from across the kitchen */
+.appl.active .appl-name::after { content: ""; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--good); box-shadow: 0 0 0 3px var(--good-soft); animation: appl-pulse 2.4s infinite; }
+@keyframes appl-pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+@media (prefers-reduced-motion: reduce) { .appl.active .appl-name::after { animation: none } }
