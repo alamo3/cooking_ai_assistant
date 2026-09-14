@@ -790,6 +790,14 @@ def create_app(settings: Optional[Settings] = None, llm: Optional[LLM] = None,
                               "ok": True, "message": "recipes loaded", "source": "ui"})
         await live.broadcast({"type": "state", **state})
 
+        # Checked here, not left to the model to remember: finding out mid-cook that the
+        # coconut milk is gone, with three pans going, is the worst possible moment.
+        from cooking_assistant_ai.core import preflight
+
+        report = preflight.check(store, session)
+        await live.broadcast({"type": "preflight", **report.to_dict()})
+        missing_line = "; ".join(g.line() for g in report.blocking)
+
         titles = ", ".join(r.title for r in wanted)
         # Plating is optional and normally unset: batch cooking has no serving deadline, and a
         # deadline forces every task as late as possible and invents conflicts.
@@ -810,6 +818,12 @@ def create_app(settings: Optional[Settings] = None, llm: Optional[LLM] = None,
               "2. Then brief the cook out loud in five or six short sentences from the PLAN SUMMARY the last tool "
               "result gives you: how long it takes and when to start, which appliances and how many burners, what "
               "to prep first, and the main ingredients to get out. End with the very first thing to do."
+            # Put ahead of the briefing, not after it: the cook is about to start, and an
+            # ingredient they have not got changes what the plan should even be.
+            + (f"\n3. FIRST, before any of that, say this out loud: the pantry is missing "
+               f"{missing_line}. Offer a substitution for each and ask what they want to do. "
+               f"Do not skip this: they are about to start cooking without it."
+               if report.blocking else "")
         )
         await live.orchestrator.submit_system(prompt)
         return state

@@ -1340,3 +1340,42 @@ async def import_recipe(ctx: ToolContext, url: Any = None) -> Tuple[str, Optiona
     return "recipes", (f"imported '{recipe.title}' [{recipe.id}], {len(recipe.ingredients)} "
                        f"ingredients, {len(recipe.steps)} steps, serves {recipe.servings}. "
                        f"It is saved and loaded.")
+
+
+@tool(
+    "add_stock",
+    "Record that the pantry has something, or correct an amount. Use when the cook says they "
+    "do have an ingredient after all, or have just bought it.",
+    _params({
+        "name": {"type": "string"},
+        "amount": {"type": "number"},
+        "unit": {"type": "string", "description": "g, ml, cup, tbsp... or omit for countable things"},
+    }, ["name"]),
+)
+def add_stock(ctx: ToolContext, name: Any = None, amount: Any = None,
+              unit: Any = None) -> Tuple[str, Optional[str]]:
+    item = _str(name, "name", required=True) or ""
+    qty = _float(amount, "amount")
+    if qty is None:
+        qty = 1.0
+    if qty < 0:
+        raise ToolError("'amount' cannot be negative; use deduct to take stock away")
+    row = ctx.store.set_stock(item, qty, _str(unit, "unit"))
+    return "inventory", f"{fmt_ingredient(row['name'], row['amount'], row['unit'])} in stock"
+
+
+@tool(
+    "check_ingredients",
+    "Check every loaded recipe against the pantry and report what is missing, with suggested "
+    "substitutions. Do this before the cook starts anything.",
+    _params({}),
+)
+def check_ingredients(ctx: ToolContext) -> Tuple[str, Optional[str]]:
+    from cooking_assistant_ai.core import preflight
+
+    report = preflight.check(ctx.store, ctx.session)
+    if not ctx.session.recipes:
+        raise ToolError("no recipes are loaded yet, so there is nothing to check")
+    if report.ok and not report.gaps:
+        return "inventory", f"all {report.checked} ingredients are in stock"
+    return "inventory", preflight.render(report, staples_too=True) or "nothing missing"

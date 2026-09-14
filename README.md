@@ -737,6 +737,33 @@ yet running; `needed` — dashed outline, a loaded recipe wants it and nothing i
 than counting down to a time it cannot know. The same board goes into the model's context, so
 it knows the hob is full before promising anything.
 
+## Checking the pantry before a pan comes out
+
+Finding out the coconut milk is gone forty minutes in, with three pans going, is the worst
+possible moment. [preflight.py](src/cooking_assistant_ai/core/preflight.py) checks every
+loaded recipe against the pantry, and it is wired in three places so it cannot be forgotten:
+
+- **At session start**, before the model plans anything. Missing items are prepended to the
+  briefing instruction ("FIRST, say this out loud...") and pushed to the tablet as a banner,
+  so the cook finds out even if the model fumbles the sentence.
+- **In every turn's context**, above the recipes, while anything is still missing.
+- **As `check_ingredients`**, for when the cook asks.
+
+It is derived, never stored, so it clears itself the moment the gap closes — by a
+`substitute`, by `add_stock`, or by skipping the steps that needed it. A warning that has to
+be dismissed by hand is one that ends up dismissed by habit.
+
+Three things it deliberately does not say:
+
+- **Staples alone earn no block.** "water is not recorded" every turn is noise.
+- **A unit mismatch is unknowable, not missing.** A kilo in the pantry against a recipe
+  asking for cups gets the benefit of the doubt.
+- **The thing you swapped *to* is assumed present.** The cook just said they would use lime;
+  warning that there is no lime is how you teach someone to ignore you.
+
+Each gap carries suggested swaps from a small table of ones that hold anywhere, so the
+assistant can be concrete immediately rather than thinking about it.
+
 ## The hob is not four free rings
 
 Four burners does not mean four pans: two large ones already fill most hobs, and a stockpot

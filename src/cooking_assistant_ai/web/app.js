@@ -318,6 +318,9 @@
         // cancel timer, add recipe) are complete once the state message lands.
         if (msg.source !== "ui" && app.phase === "idle") setPhase("thinking");
         break;
+      case "preflight":
+        renderPreflight(msg);
+        break;
       case "notice":
         if (msg.level === "warning" || msg.level === "error") toast(msg.text, msg.level === "error");
         break;
@@ -1070,6 +1073,24 @@
     }
   }
 
+
+  // ------------------------------------------------------------ missing ingredients
+  // Shown as a banner as well as spoken: if the model fumbles the sentence, the cook still
+  // finds out before the first pan goes on.
+  function renderPreflight(report) {
+    const bar = $("#preflight-banner");
+    const missing = (report.missing || []).filter((m) => !m.staple);
+    if (!missing.length) { bar.hidden = true; bar.innerHTML = ""; return; }
+    bar.innerHTML = "";
+    bar.appendChild(el("b", null, missing.length === 1 ? "Missing an ingredient: "
+                                                       : `Missing ${missing.length} ingredients: `));
+    bar.appendChild(document.createTextNode(
+      missing.map((m) => m.text + (m.swaps && m.swaps.length ? ` (try ${m.swaps[0]})` : "")).join("; ")));
+    const dismiss = el("button", "small ghost", "Dismiss");
+    dismiss.onclick = () => { bar.hidden = true; };
+    bar.appendChild(dismiss);
+    bar.hidden = false;
+  }
 
   // ------------------------------------------------------------ my kitchen
   // Which appliances the cook actually owns. This is a constraint, not decoration: the board

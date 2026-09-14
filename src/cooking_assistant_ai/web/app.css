@@ -449,3 +449,10 @@ button.ghost { background: transparent; color: var(--muted); }
 .burner-size { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px;
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 7px 11px; }
 .burner-size select { font-size: 13px; padding: 3px 6px; }
+
+/* missing ingredients: louder than a toast, because the cook is about to start */
+.preflight-banner { background: rgba(217,97,78,.14); color: var(--bad);
+  border-bottom: 1px solid rgba(217,97,78,.45); padding: 11px 20px; font-size: 14.5px;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.preflight-banner b { color: var(--bad); }
+.preflight-banner button { margin-left: auto; }

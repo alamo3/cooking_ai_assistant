@@ -10,6 +10,8 @@ from typing import Any, Dict, List
 
 from cooking_assistant_ai.core.appliances import describe_kitchen, render_board
 from cooking_assistant_ai.core.diet import describe
+from cooking_assistant_ai.core.preflight import check as check_pantry
+from cooking_assistant_ai.core.preflight import render as render_preflight
 from cooking_assistant_ai.core.plan import render_cook_plan
 from cooking_assistant_ai.core.render import (
     render_all_changes,
@@ -41,6 +43,7 @@ State rules:
 - If add_task is rejected because it would end after plating, do not keep retrying the same call: shorten the chain, drop must_finish_by, or tell the cook plating will need to move.
 - substitute edits the saved recipe for good: the swap is in the ingredients and the step wording from now on, this cook and every cook after. Say so briefly ("swapped for good" / "that's the recipe now"). If the cook only wants it this once, pass at_step so just that step changes.
 - A rice cooker, bread maker or pressure cooker finishes when it finishes. Its window on the plan is an estimate, not a deadline: never set a timer for one, never promise a time, and say roughly how long it usually takes and that you need the cook to tell you when it clicks off. When they say it is done, call mark_complete for that task straight away so everything after it moves.
+- If a MISSING INGREDIENTS block is present, deal with it before anything else: say what is missing, suggest a substitution for each, and do not walk the cook into a step that needs something they have not got. It disappears on its own once they substitute or add the stock.
 - Use remember for preferences or facts worth keeping (allergies, "prefers less salt", substitutions they like).
 - When the cook asks what to cook, or how to use what they have, call suggest_meals (pass meals=N if they said how many portions). Recommend a specific set of meals and say how many portions it makes.
 - When the cook wants something new, search for it: call find_recipes and then import_recipe with the url they pick. A published recipe someone has actually cooked beats one you made up, so reach for create_recipe only to write down something the cook describes to you, or when a search finds nothing usable.
@@ -57,6 +60,9 @@ def _state_blocks(session: Session, now: datetime, store=None) -> str:
     if diet and diet != "none":
         blocks.append(f"DIET: {diet}. {describe(diet)} This applies to every suggestion, "
                       f"substitution and recipe you propose, without exception.")
+    shortages = render_preflight(check_pantry(store, session))
+    if shortages:
+        blocks.append(shortages)
     if session.notes:
         blocks.append("SESSION NOTES\n" + "\n".join(f"- {n}" for n in session.notes))
     blocks.append(render_all_recipes(session))
