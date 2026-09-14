@@ -307,8 +307,9 @@ _RECIPE_SCHEMA: Dict[str, Any] = {
         "title": {"type": "string"},
         "servings": {"type": "integer"},
         "ingredients": {"type": "array", "items": {"type": "object", "properties": {
-            "name": {"type": "string"}, "amount": {"type": "number"}, "unit": {"type": ["string", "null"]}},
-            "required": ["name", "amount"]}},
+            "name": {"type": "string"}, "amount": {"type": "number"}, "unit": {"type": ["string", "null"]},
+            "contains": {"type": "array", "items": {"type": "string"}}},
+            "required": ["name", "amount", "contains"]}},
         "steps": {"type": "array", "items": {"type": "object", "properties": {
             "text": {"type": "string"}, "duration_s": {"type": ["integer", "null"]},
             "appliance": {"type": ["string", "null"]}, "temp_f": {"type": ["integer", "null"]},
@@ -423,6 +424,12 @@ async def extract_recipe(source: str, llm: LLM, store: Store) -> Recipe:
     prompt = (
         "Extract the recipe below as JSON. Rules: one ingredient entry per line, with amount as a number "
         "(convert fractions like 1/2 to 0.5; use 1 if no amount is given), unit as a short string (g, ml, cup, "
+        "contains: which of meat, pork, seafood, dairy, egg, honey, alcohol this ingredient "
+        "actually contains, as a list, empty when none. Judge the food, not the word: caesar "
+        "dressing contains seafood (anchovies), marshmallows contain meat (gelatin), refried "
+        "beans often contain meat (lard), parmesan and most hard cheeses contain meat (animal "
+        "rennet) as well as dairy, kimchi often contains seafood, worcestershire contains "
+        "seafood, mirin and most vinegars made from wine contain alcohol. "
         "tbsp, tsp, oz, lb, clove) or null for countable items; steps in order with the original wording "
         "lightly tidied; appliance as 'oven', 'stovetop:1', 'air_fryer', 'rice_cooker', 'pressure_cooker', "
         "'bread_maker', 'grill', 'microwave' or null; temp_f in Fahrenheit (convert from C) when the step "

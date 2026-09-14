@@ -1026,7 +1026,9 @@ def create_recipe(ctx: ToolContext, title: Any = None, servings: Any = None,
         iid = f"{rid}-i{n}"
         ing_rows.append({"id": iid, "name": iname,
                          "amount": _float(raw.get("amount"), "amount") or 1.0,
-                         "unit": _str(raw.get("unit"), "unit")})
+                         "unit": _str(raw.get("unit"), "unit"),
+                         "contains": ([str(x).strip().lower() for x in raw["contains"]]
+                                      if isinstance(raw.get("contains"), list) else None)})
         by_name[iname.lower()] = iid
 
     step_rows = []
@@ -1340,7 +1342,7 @@ async def import_recipe(ctx: ToolContext, url: Any = None) -> Tuple[str, Optiona
         raise ToolError("no model available to read the page")
     recipe = await import_recipe_from_url(target, ctx.llm, ctx.store)
 
-    violations = check_recipe([i.name for i in recipe.ingredients], ctx.store.diet)
+    violations = check_recipe(list(recipe.ingredients), ctx.store.diet)
     blocked = [v for v in violations if v.severity == "excluded"]
     if blocked:
         ctx.store.delete_recipe(recipe.id)

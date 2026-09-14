@@ -100,3 +100,60 @@ def test_diet_reaches_the_model_prompt(session, store):
     # and it is absent when unrestricted, so we do not waste context
     store.set_diet("none")
     assert "DIET:" not in assemble_context(session, "hi", session.started_at, store=store)[0]["content"]
+
+
+# ------------------------------------------- what an ingredient is, not how it is spelled
+
+def test_hidden_animal_products_a_word_list_cannot_see():
+    """Every one of these was allowed before, because the name contains no offending word."""
+    from cooking_assistant_ai.core.diet import check_ingredient
+
+    hidden = [
+        ("caesar dressing", ("seafood",), "vegetarian"),   # anchovies
+        ("kimchi", ("seafood",), "vegetarian"),            # fish sauce
+        ("parmesan", ("dairy", "meat"), "vegetarian"),     # animal rennet
+        ("rennet", ("meat",), "vegetarian"),
+        ("bone broth", ("meat",), "vegetarian"),
+        ("marshmallows", ("meat",), "vegan"),              # gelatin
+        ("refried beans", ("meat",), "vegan"),             # lard
+    ]
+    for name, contains, diet in hidden:
+        v = check_ingredient(name, diet, contains)
+        assert v is not None and v.severity == "excluded", f"{name} slipped past {diet}"
+
+
+def test_a_stored_judgement_also_prevents_false_alarms():
+    from cooking_assistant_ai.core.diet import check_ingredient
+
+    # the name says beef, the food is a tomato
+    assert check_ingredient("beef tomato", "halal", ()) is None
+    assert check_ingredient("vegan butter", "vegan", ()) is None
+    assert check_ingredient("oat milk", "vegan", ()) is None
+
+
+def test_halal_separates_forbidden_from_unverifiable():
+    from cooking_assistant_ai.core.diet import check_ingredient
+
+    assert check_ingredient("lard", "halal", ("pork",)).severity == "excluded"
+    assert check_ingredient("mirin", "halal", ("alcohol",)).severity == "excluded"
+    # meat is allowed but no ingredient list can certify how it was slaughtered
+    assert check_ingredient("chicken breast", "halal", ("meat",)).severity == "check"
+
+
+def test_unjudged_ingredients_still_fall_back_to_the_word_lists():
+    from cooking_assistant_ai.core.diet import check_ingredient
+
+    assert check_ingredient("chicken stock", "vegan") is not None   # contains=None
+    assert check_ingredient("olive oil", "vegan") is None
+
+
+def test_the_judgement_travels_with_the_ingredient(ctx):
+    """check_recipe takes Ingredients, so the stored answer is used rather than the name."""
+    from dataclasses import replace
+    from cooking_assistant_ai.core.diet import check_recipe
+    from cooking_assistant_ai.model.types import Ingredient
+
+    plain = [Ingredient(id="i1", name="caesar dressing", amount=1)]
+    assert check_recipe(plain, "vegetarian") == []           # unjudged: the name hides it
+    judged = [replace(plain[0], contains=("seafood",))]
+    assert check_recipe(judged, "vegetarian"), "the stored judgement was ignored"

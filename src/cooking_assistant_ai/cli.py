@@ -181,11 +181,13 @@ def _show(result) -> None:
 
 
 async def classify_steps(args: argparse.Namespace) -> None:
-    """Backfill Step.prep for recipes stored before the model was asked.
+    """Backfill the model's judgements onto stored recipes: which steps are prep, and what
+    each ingredient actually contains.
 
-    A verb heuristic cannot tell "Tuck the garlic and lemon halves around the thighs" from
-    real prep, and getting it wrong now blocks a task from starting. One model call per
-    recipe, stored, so nothing pays for it at cook time.
+    Both are semantic questions a word list cannot answer. A verb heuristic cannot tell "Tuck
+    the garlic and lemon halves around the thighs" from real prep, and no list of meat words
+    knows that caesar dressing has anchovies in it. Asked once per recipe and stored, so
+    nothing pays for it at cook time.
     """
     from dataclasses import replace as _replace
 
@@ -194,33 +196,66 @@ async def classify_steps(args: argparse.Namespace) -> None:
 
     store = Store(args.db or os.environ.get("COOK_DB", "cooking.db"))
     llm = build_llm()
-    schema = {"type": "object", "properties": {"prep": {"type": "array", "items": {"type": "boolean"}}},
-              "required": ["prep"]}
+    schema = {
+        "type": "object",
+        "properties": {
+            "prep": {"type": "array", "items": {"type": "boolean"}},
+            "contains": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
+        },
+        "required": ["prep", "contains"],
+    }
     for recipe in store.list_recipes():
-        if not args.all and all(s.prep is not None for s in recipe.steps):
-            print(f"  {recipe.id} {recipe.title}: already classified")
+        judged = (all(s.prep is not None for s in recipe.steps)
+                  and all(i.contains is not None for i in recipe.ingredients))
+        if not args.all and judged:
+            print(f"  {recipe.id} {recipe.title}: already judged")
             continue
-        numbered = "\n".join(f"{n}. {s.text}" for n, s in enumerate(recipe.steps, start=1))
+
+        steps = "\n".join(f"{n}. {s.text}" for n, s in enumerate(recipe.steps, start=1))
+        items = "\n".join(f"{n}. {i.name}" for n, i in enumerate(recipe.ingredients, start=1))
         raw = await llm.complete([{"role": "user", "content":
-            "For each numbered step, is it preparation the cook does before anything is on "
-            "the heat (chopping, rinsing, peeling, measuring, seasoning raw ingredients, "
-            "making a marinade)? Cooking, resting, assembling and serving are not prep. "
-            "Judge each step as a whole: 'Tuck the garlic and lemon halves around the thighs' "
-            "is cooking, not prep, despite the word halves.\n"
-            f"Answer with one boolean per step, in order.\n\n{numbered}"}], json_schema=schema)
+            "Two questions about one recipe.\n\n"
+            "PREP: for each numbered step, is it preparation the cook does before anything is "
+            "on the heat (chopping, rinsing, peeling, measuring, seasoning raw ingredients, "
+            "making a marinade)? Cooking, resting, assembling and serving are not prep. Judge "
+            "each step whole: 'Tuck the garlic and lemon halves around the thighs' is cooking, "
+            "not prep, despite the word halves. One boolean per step, in order.\n\n"
+            f"{steps}\n\n"
+            "CONTAINS: for each numbered ingredient, which of meat, pork, seafood, dairy, egg, "
+            "honey, alcohol does it actually contain? Empty list when none. Judge the food, "
+            "not the word: caesar dressing contains seafood (anchovies), marshmallows contain "
+            "meat (gelatin), refried beans often contain meat (lard), parmesan contains dairy "
+            "and meat (animal rennet), kimchi often contains seafood, worcestershire contains "
+            "seafood, mirin contains alcohol. One list per ingredient, in order.\n\n"
+            f"{items}"}], json_schema=schema)
         try:
-            flags = json.loads(raw)["prep"]
+            answer = json.loads(raw)
+            flags = answer["prep"]
         except (ValueError, KeyError, TypeError):
             print(f"  {recipe.id} {recipe.title}: unreadable answer, left alone")
             continue
-        if len(flags) != len(recipe.steps):
-            print(f"  {recipe.id} {recipe.title}: got {len(flags)} answers for "
-                  f"{len(recipe.steps)} steps, left alone")
-            continue
-        steps = tuple(_replace(s, prep=bool(f)) for s, f in zip(recipe.steps, flags))
-        store.put_recipe(_replace(recipe, steps=steps))
-        marks = "".join("P" if f else "." for f in flags)
-        print(f"  {recipe.id} {recipe.title}: {marks}")
+
+        new_steps = recipe.steps
+        if len(flags) == len(recipe.steps):
+            new_steps = tuple(_replace(s, prep=bool(f)) for s, f in zip(recipe.steps, flags))
+        else:
+            print(f"  {recipe.id}: {len(flags)} step answers for {len(recipe.steps)} steps")
+
+        cats = answer.get("contains") or []
+        new_items = recipe.ingredients
+        if len(cats) == len(recipe.ingredients):
+            new_items = tuple(
+                _replace(i, contains=tuple(str(c).strip().lower() for c in (row or [])))
+                for i, row in zip(recipe.ingredients, cats))
+        else:
+            print(f"  {recipe.id}: {len(cats)} ingredient answers for "
+                  f"{len(recipe.ingredients)} ingredients")
+
+        store.put_recipe(_replace(recipe, steps=new_steps, ingredients=new_items))
+        marks = "".join("P" if s.prep else "." for s in new_steps)
+        found = sorted({c for i in new_items for c in (i.contains or ())})
+        print(f"  {recipe.id} {recipe.title}: {marks}"
+              + (f"   contains: {', '.join(found)}" if found else ""))
     close = getattr(llm, "aclose", None)
     if close:
         await close()
@@ -254,7 +289,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--key", help="private key file")
 
     cs = sub.add_parser("classify-steps",
-                        help="ask the model which stored recipe steps are prep (once, then stored)")
+                        help="ask the model which steps are prep and what each ingredient contains")
     cs.add_argument("--db", default=None)
     cs.add_argument("--all", action="store_true", help="redo recipes that already have it")
 

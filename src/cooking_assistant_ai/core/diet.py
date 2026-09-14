@@ -8,14 +8,19 @@ Two severities, because they are genuinely different questions:
   only if it was slaughtered that way, and no ingredient list can tell you. Say so rather
   than pretending to certify it.
 
-Plant-based products are excluded from the dairy rules by qualifier, so "coconut cream" and
-"vegan butter" are not mistaken for dairy.
+What an ingredient contains is decided by the model when the recipe is imported and stored on
+the Ingredient, because it is a fact about food rather than about spelling. A word list can
+catch "chicken stock"; it cannot know that caesar dressing has anchovies in it, that
+marshmallows are gelatin, or that refried beans are traditionally lard, since none of those
+names contain the offending word. The lists below remain as the fallback for ingredients
+nobody has judged, with plant qualifiers so "coconut cream" and "vegan butter" are not
+mistaken for dairy - a patch that only exists because spelling was being used as evidence.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 DIETS = ("none", "halal", "vegetarian", "vegan")
 
@@ -46,6 +51,27 @@ NOT_MEAT_PHRASES = ("beef tomato", "beefsteak tomato", "chicken of the woods",
                     "vegetable stock", "vegetable broth", "mock", "vegetarian")
 
 
+# What an ingredient actually contains, decided by the model when the recipe is imported and
+# stored on the Ingredient. The word lists below can catch "chicken stock"; they cannot know
+# that caesar dressing has anchovies in it, that marshmallows are gelatin, or that refried
+# beans are traditionally lard, because none of those names contain the offending word. Those
+# are facts about food, not about spelling.
+ANIMAL_CATEGORIES = ("meat", "pork", "seafood", "dairy", "egg", "honey", "alcohol")
+
+_EXCLUDED_BY_DIET: Dict[str, Tuple[str, ...]] = {
+    "vegan": ("meat", "pork", "seafood", "dairy", "egg", "honey"),
+    "vegetarian": ("meat", "pork", "seafood"),
+    "halal": ("pork", "alcohol"),
+}
+# Allowed, but not certifiable from an ingredient list.
+_CHECK_BY_DIET: Dict[str, Tuple[str, ...]] = {"halal": ("meat",)}
+
+_CATEGORY_REASON = {
+    "meat": "meat", "pork": "pork or pork-derived", "seafood": "fish or shellfish",
+    "dairy": "dairy", "egg": "egg", "honey": "honey", "alcohol": "alcoholic",
+}
+
+
 @dataclass(frozen=True)
 class Violation:
     ingredient: str
@@ -70,7 +96,28 @@ def _plant_based(name: str) -> bool:
     return any(q in low for q in PLANT_QUALIFIERS)
 
 
-def check_ingredient(name: str, diet: str) -> Optional[Violation]:
+def check_known(name: str, contains: Tuple[str, ...], diet: str) -> Optional[Violation]:
+    """Judge an ingredient from what it is known to contain, not from how it is spelled."""
+    diet = (diet or "none").lower()
+    if diet == "none":
+        return None
+    have = {c.strip().lower() for c in contains}
+    for category in _EXCLUDED_BY_DIET.get(diet, ()):
+        if category in have:
+            reason = _CATEGORY_REASON.get(category, category)
+            return Violation(name, category, f"{name} contains {reason}", "excluded")
+    for category in _CHECK_BY_DIET.get(diet, ()):
+        if category in have:
+            return Violation(name, category, f"{name} must be halal-certified", "check")
+    return None
+
+
+def check_ingredient(name: str, diet: str,
+                     contains: Optional[Tuple[str, ...]] = None) -> Optional[Violation]:
+    """`contains` is the model's judgement, stored on the Ingredient. When it is present it
+    is the answer; the word lists below are only for ingredients nobody has judged."""
+    if contains is not None:
+        return check_known(name, contains, diet)
     diet = (diet or "none").lower()
     if diet == "none":
         return None
@@ -97,10 +144,12 @@ def check_ingredient(name: str, diet: str) -> Optional[Violation]:
     return None
 
 
-def check_recipe(ingredient_names: List[str], diet: str) -> List[Violation]:
+def check_recipe(ingredients: List[Any], diet: str) -> List[Violation]:
+    """Accepts names or Ingredient objects; an Ingredient brings its stored judgement along."""
     out: List[Violation] = []
-    for name in ingredient_names:
-        v = check_ingredient(name, diet)
+    for item in ingredients:
+        name = getattr(item, "name", item)
+        v = check_ingredient(str(name), diet, getattr(item, "contains", None))
         if v is not None:
             out.append(v)
     return out

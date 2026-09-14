@@ -109,7 +109,7 @@ def match_recipe(store: Store, recipe: Recipe, scale: float = 1.0,
                  diet: Optional[str] = None) -> Match:
     diet = store.diet if diet is None else diet
     m = Match(recipe=recipe, scale=scale,
-              violations=check_recipe([i.name for i in recipe.ingredients], diet))
+              violations=check_recipe(list(recipe.ingredients), diet))
     for ing in recipe.ingredients:
         key = ingredient_key(ing.name) or ing.name.lower()
         stock = store.get_stock(key) or store.get_stock(ing.name)

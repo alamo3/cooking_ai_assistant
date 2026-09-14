@@ -19,6 +19,10 @@ class Ingredient:
     name: str
     amount: float
     unit: Optional[str] = None  # None for countable items
+    # Animal products this contains, decided by the model at import: ("seafood",) for caesar
+    # dressing, ("egg",) for mayonnaise. None means nobody judged it and the word lists in
+    # diet.py have to guess from the name, which cannot see inside a compound food.
+    contains: Optional[Tuple[str, ...]] = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +79,7 @@ class Recipe:
                 name=str(raw["name"]),
                 amount=float(raw.get("amount", 1)),
                 unit=raw.get("unit"),
+                contains=tuple(raw["contains"]) if isinstance(raw.get("contains"), list) else None,
             ))
         steps = []
         for n, raw in enumerate(d.get("steps", []), start=1):
@@ -101,7 +106,8 @@ class Recipe:
             "title": self.title,
             "servings": self.servings,
             "ingredients": [
-                {"id": i.id, "name": i.name, "amount": i.amount, "unit": i.unit}
+                {"id": i.id, "name": i.name, "amount": i.amount, "unit": i.unit,
+                 "contains": list(i.contains) if i.contains is not None else None}
                 for i in self.ingredients
             ],
             "steps": [

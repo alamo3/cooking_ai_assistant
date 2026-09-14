@@ -561,6 +561,23 @@ message and speaks only the corrected reply. A claim still unbacked after that i
 with a `notice` on the websocket. Timer status remarks ("your rice timer is still running")
 are accepted when such a timer exists.
 
+## Diet checking looks at the food, not the spelling
+
+A word list catches "chicken stock". It cannot know that caesar dressing has anchovies in it,
+that marshmallows are gelatin, or that refried beans are traditionally lard, because none of
+those names contain the offending word. Tested against the old checker, seven of eighteen
+hard cases were wrongly allowed - including rennet, bone broth and parmesan in a vegetarian
+kitchen.
+
+`Ingredient.contains` now holds the model's answer, decided at import: which of meat, pork,
+seafood, dairy, egg, honey, alcohol the ingredient actually contains. Diet rules are then
+plain set arithmetic over those categories, and every one of the seven is caught.
+
+`cooking-assistant-ai classify-steps` backfills it alongside the prep flags, in one model call
+per recipe. The word lists survive as the fallback for unjudged ingredients, along with their
+`PLANT_QUALIFIERS` and `NOT_MEAT_PHRASES` patches - exceptions that only ever existed because
+spelling was being used as evidence.
+
 ## Dietary restrictions
 
 `none`, `halal`, `vegetarian` or `vegan`, chosen on the Recipes screen, stored in SQLite so
