@@ -54,3 +54,47 @@ def test_justification_by_tools_and_running_timers(session):
                                      end_at=session.started_at + timedelta(minutes=10))
     assert not unjustified_claims("Your rice timer is still running with 8 minutes left.", [], session)
     assert unjustified_claims("I've set a chicken timer for 25 minutes.", [], session)
+
+
+# --------------------------------------------- the same claims, in the voice models use
+
+def test_claims_are_caught_without_the_first_person():
+    """Every rule used to require "I've". The day the model changed from one that says
+    "I've swapped the butter" to one that says "Swapped - olive oil instead", claim checking
+    silently stopped catching two thirds of claims and nothing reported it."""
+    verbatim = [                                   # all taken from real DeepSeek turns
+        "Lime swapped in for good, thyme logged, and the garlic step skipped.",
+        "Swapped - olive oil instead of butter, that's the recipe now.",
+        "Plan's set: chicken roasts first, then the sprouts go in the same oven.",
+        "Rice is marked done.",
+        "Oven's heating, 15 minutes on the timer.",
+        "Timer's on for 12 minutes.",
+        "Started the chicken roasting.",
+        "Everything's scheduled.",
+    ]
+    for sentence in verbatim:
+        assert kinds(sentence), f"unchecked claim: {sentence}"
+
+
+def test_offers_and_questions_are_not_claims():
+    """Mood, not wording: "shall I set a timer?" contains every word "timer's set" does."""
+    for sentence in ["You'll want a timer for that, shall I set one?",
+                     "Do you want me to swap the butter?",
+                     "I can set a timer if you like.",
+                     "Shall I add that to the plan?",
+                     "Which one did you mean?"]:
+        assert kinds(sentence) == [], f"false claim on: {sentence}"
+
+
+def test_ordinary_status_talk_is_still_ignored():
+    for sentence in ["The rice has about 12 minutes left.",
+                     "That takes about 25 minutes in the oven.",
+                     "Next: preheat the oven to 425F.",
+                     "The chicken needs about 25 more minutes.",
+                     "The sprouts go in the same oven."]:
+        assert kinds(sentence) == [], f"false claim on: {sentence}"
+
+
+def test_a_commitment_is_a_claim_but_an_offer_is_not():
+    assert kinds("I'll set a timer for the sprouts.") == ["timer"]
+    assert kinds("I can set a timer for the sprouts if you like.") == []

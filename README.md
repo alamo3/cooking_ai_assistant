@@ -527,6 +527,28 @@ what has been recorded), the model owns judgement (what the cook meant, what to 
 something goes wrong, when to ask). A guardrail that silently corrected state would make the
 assistant a state machine with a voice; one that asks keeps it a cook's assistant.
 
+## Claim checking had silently stopped working
+
+Every rule in [claims.py](src/cooking_assistant_ai/core/claims.py) required the first person
+(`I've set`, `I've swapped`), which is how Gemini phrased everything. DeepSeek says "Swapped
+-", "Plan's set", "Rice is marked done". Switching models therefore turned two thirds of
+claim checking off, and nothing reported it. Measured on sentences taken verbatim from real
+DeepSeek turns, **all five were missed**.
+
+The rules now match the assertion in any person, and mood is tested first instead: a question
+or an offer returns no claims at all. That is what makes dropping the first person safe,
+because "shall I set a timer?" contains every word "Timer's set" does and differs only in
+mood. "I'll set a timer" stays a claim, because a commitment made and not kept is exactly the
+drift being guarded against.
+
+| | before | after |
+|---|---|---|
+| claims caught | 5/18 | **18/18** |
+| ordinary speech correctly ignored | 12/14 | **14/14** |
+
+The lesson generalises past this file: a heuristic tuned to one model's voice is a silent
+dependency on that model. Nothing failed, no test broke, the guard just stopped guarding.
+
 ## Claim checking
 
 State only changes through tools, so any first-person claim in the model's reply ("I've set

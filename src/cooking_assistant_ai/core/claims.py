@@ -1,12 +1,14 @@
 """Claim checking (spec Phase 3, code-side).
 
-The model sometimes *says* it did something ("I've set a timer for 25 minutes") without
-calling the tool. Every such sentence is a first-person claim about state, and state only
-changes through tools, so a claim is justified only if a matching tool call succeeded in
-the same turn (or, for timer status remarks, a timer is actually running).
+The model sometimes *says* it did something ("timer's on for 12 minutes") without calling the
+tool. State only changes through tools, so a claim is justified only if a matching tool call
+succeeded in the same turn (or, for timer status remarks, a timer really is running).
 
-Detection is regex over sentences; deliberately conservative so that ordinary speech
-("there are 15 minutes left on the rice timer") is never flagged.
+Detection is regex over sentences, but mood is checked before wording: questions and offers
+are dropped first, which is what lets the rules match an assertion in any person. The original
+rules all required "I've", which is how Gemini phrased everything. DeepSeek says "Swapped -",
+"Plan's set", "Rice is marked done" — so on the day the model changed, claim checking quietly
+stopped catching two thirds of claims and nothing reported it.
 """
 from __future__ import annotations
 
@@ -16,34 +18,53 @@ from typing import FrozenSet, Iterable, List, Optional, Set, Tuple  # noqa: F401
 
 from cooking_assistant_ai.model.types import Session
 
-_I = r"\b(?:i(?:'ve|'ll| have| will| just|'m going to| am going to)?|let me|i'll go ahead and|i've gone ahead and)"
+# "Shall I set a timer?" and "Timer's set" differ by mood, not by the words in them, so mood
+# is what has to be tested first. Without this guard, dropping the first-person requirement
+# would flag every offer the assistant makes.
+_NOT_A_CLAIM = re.compile(
+    r"\?\s*$"
+    r"|\b(?:shall i|should i|do you want|would you like|want me to|shall we)\b"
+    # "I'll set a timer" is a commitment, not an offer, and saying it without calling the
+    # tool is precisely the drift being guarded against, so it stays a claim.
+    r"|\b(?:i can|i could|let me know|if you want|if you like|when you're ready)\b",
+    re.I)
 
 RULES: List[Tuple[str, "re.Pattern[str]", FrozenSet[str]]] = [
     ("timer",
-     re.compile(_I + r" (?:set|start|put on|create|get|add)\w* (?:up )?(?:a |the |your |another |that )?(?:\w+[- ]){0,4}(?:timer|alarm|countdown)\b"
-                r"|\b(?:timer|alarm|countdown)(?:'s| is| has been|s are| are)? (?:set|on|going|started|running|ticking)\b"
-                r"|\bset (?:a|the|your) (?:\w+[- ]){0,4}(?:timer|alarm)\b", re.I),
+     re.compile(r"\b(?:set|start|started|starting|put on)\b[^.]{0,40}\b(?:timer|alarm|countdown)\b"
+                r"|\b(?:timer|alarm|countdown)(?:'s| is| has been|s are| are)?\s*"
+                r"(?:set|on|going|started|running|ticking)\b"
+                r"|\bon the (?:timer|clock)\b", re.I),
      frozenset({"set_timer"})),
     ("complete",
-     re.compile(_I + r" (?:mark|marked|record|recorded|check|checked off|log|logged)\b", re.I),
-     frozenset({"mark_complete", "skip_step", "start_task"})),
+     re.compile(r"\b(?:marked|ticked off|checked off|logged|recorded|noted down|crossed off)\b"
+                r"|\b(?:is|are)\s+(?:now\s+)?(?:marked\s+)?(?:done|complete|completed)\b"
+                r"|\bmark(?:ing)?\s+(?:that|it|the\s+\w+)\s+(?:as\s+)?done\b", re.I),
+     frozenset({"mark_complete", "skip_step", "start_task", "complete_prep"})),
     ("started",
-     re.compile(_I + r" (?:started|kicked off|begun|began)\b", re.I),
-     frozenset({"start_task"})),
+     re.compile(r"\b(?:started|kicked off|begun|began)\b"
+                r"|\b(?:is|are|'s)\s+(?:now\s+)?(?:under way|underway)\b"
+                r"|\b(?:is|are|'s)\s+(?:now\s+)?"
+                r"(?:roasting|simmering|boiling|frying|searing|baking)\b", re.I),
+     frozenset({"start_task", "mark_complete"})),
     ("remember",
-     re.compile(_I + r" (?:remember|remembered|note|noted|make a note|made a note|jot|keep (?:that |this )?in mind)\b", re.I),
-     frozenset({"remember", "add_note"})),
+     re.compile(r"\b(?:noted|remember|remembered|remembering|jotted|made a note|noting that)\b"
+                r"|\bkeep(?:ing)? (?:that|this) in mind\b", re.I),
+     # "Noted" asserts only that something was written down, so any successful write settles
+     # it. The failure this catches is saying "noted" and calling nothing at all.
+     frozenset({"remember", "add_note", "set_diet", "add_stock", "mark_complete",
+                "complete_prep", "skip_step", "start_task", "substitute"})),
     ("plan",
-     re.compile(_I + r" (?:add|added|schedule|scheduled|move|moved|reschedule|rescheduled|remove|removed|replan|replanned|"
-                r"update|updated|set) (?:\w+[- ]){0,3}(?:plan|timeline|schedule|plating|task|tasks)\b"
-                r"|" + _I + r" (?:added|scheduled|rescheduled|moved) (?:the |a |your )?(?:\w+[- ]){0,3}(?:to|on|in) the (?:plan|timeline|schedule)\b"
-                r"|\b(?:the |your )?(?:plan|timeline|schedule) (?:is|looks|'s) (?:ready|set|done|complete|built|in place)\b"
-                r"|\beverything (?:is|'s) (?:planned|scheduled|set up|on the timeline)\b", re.I),
+     re.compile(r"\b(?:added|scheduled|rescheduled|moved|replanned|removed)\b[^.]{0,40}"
+                r"\b(?:plan|timeline|schedule|task)\b"
+                r"|\b(?:plan|timeline|schedule)(?:'s| is|s are| are)?\s*"
+                r"(?:set|built|ready|done|complete|in place|sorted)\b"
+                r"|\beverything(?:'s| is)\s+(?:planned|scheduled|set up|sorted)\b", re.I),
      frozenset({"add_task", "move_task", "remove_task", "replan", "set_target_plating"})),
     ("recipe",
-     re.compile(_I + r" (?:swap|swapped|substitute|substituted|scale|scaled|double|doubled|halve|halved|skip|skipped|"
-                r"update|updated) (?:\w+[- ]){0,3}(?:recipe|ingredient|ingredients|substitution|step|amounts)\b"
-                r"|" + _I + r" (?:swapped|substituted|doubled|halved|scaled)\b", re.I),
+     re.compile(r"\b(?:swapped|substituted|subbed|scaled|doubled|halved|skipped)\b"
+                r"|\b(?:recipe|it)(?:'s| is| now)\s+(?:uses|using|got)\b"
+                r"|\bthat(?:'s| is) the recipe now\b", re.I),
      frozenset({"substitute", "scale", "add_note", "add_step", "skip_step"})),
 ]
 
@@ -63,6 +84,8 @@ class Claim:
 
 def find_claims(sentence: str) -> List[Claim]:
     out: List[Claim] = []
+    if _NOT_A_CLAIM.search(sentence):
+        return out
     for kind, pattern, needs in RULES:
         if pattern.search(sentence):
             out.append(Claim(kind, sentence, needs))
