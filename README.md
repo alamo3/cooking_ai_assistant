@@ -282,7 +282,7 @@ discarded), `notice`, `error`.
 
 ## Cloud inference (the default)
 
-`COOK_LLM=cloud` is the default: Gemini 3.8 Flash via OpenRouter, with the local Ollama model
+`COOK_LLM=cloud` is the default: DeepSeek v4.1 Flash via OpenRouter, with the local Ollama model
 as a safety net for when the internet drops mid-cook. The local model is **not built,
 connected to or warmed** until a cloud request actually fails — constructing it is cheap but
 warming it loads ~19 GB into VRAM, which would then sit there for the whole `keep_alive`
@@ -779,6 +779,23 @@ uv run cooking-assistant-ai log 23722ff4     # one session
 
 This exists because two cooks went badly and both post-mortems were guesswork. Rejections are
 the interesting part: they are where the model wanted something the kitchen would not give it.
+
+## What the transcription was actually getting wrong
+
+The second cook's log showed the failure was decoding quality, not model size. Long sentences
+came back near-perfect:
+
+> "Is it normal for this tofu to deposit a layer at the bottom of the stainless steel pan?"
+
+while short and noisy ones broke in two distinct ways: `"why are we removing the broccoli"`
+became `"wire, we are moving the broccoli"`, and pan noise produced `"Obama Kana Bana Rav"`
+out of nothing.
+
+whisper.cpp was being run with `-bs 1 -bo 1 -nf` — greedy decoding, one candidate, temperature
+fallback disabled. That is the fastest and least accurate configuration it has, and it is
+exactly what mangles short utterances and hallucinates on non-speech. It now runs beam search
+with fallback enabled and non-speech tokens suppressed (`COOK_WHISPER_BEAM`,
+`COOK_WHISPER_BEST_OF`, `COOK_WHISPER_NO_SPEECH`), which costs about a second per utterance.
 
 ## Speech
 

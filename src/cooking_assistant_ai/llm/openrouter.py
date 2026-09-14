@@ -24,9 +24,8 @@ from cooking_assistant_ai.llm.client import LLM, Chunk, ToolCallRequest
 log = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-# Chosen by the messy-recovery benchmark: fast, strong at replanning, and cheap enough that
-# a week of cooking costs pence ($0.75/M in, $3.75/M out).
-DEFAULT_OR_MODEL = os.environ.get("COOK_OPENROUTER_MODEL", "google/gemini-3.8-flash")
+# $0.15/M in, $0.60/M out against Gemini 3.8 Flash's $0.75 / $3.75, with a 1M context.
+DEFAULT_OR_MODEL = os.environ.get("COOK_OPENROUTER_MODEL", "deepseek/deepseek-v4.1-flash")
 
 
 def default_reasoning_for(model: str) -> Optional[str]:
@@ -34,8 +33,10 @@ def default_reasoning_for(model: str) -> Optional[str]:
 
     Off wherever it is allowed: a hidden chain of thought measured 11,621 reasoning tokens
     and 262 s for 90 spoken words, which is unusable when someone is standing at a hob.
-    Gemini's endpoint rejects disabling it outright ("Reasoning is mandatory"), so it gets
-    the smallest setting it will accept instead.
+    Measured again on DeepSeek v4.1 Flash, "what's next?" took 5.5 s at effort=low against
+    0.7 s with it off, for a slightly fuller plan; in a kitchen the second and a half of
+    silence matters more. Gemini's endpoint rejects disabling it outright ("Reasoning is
+    mandatory"), so it gets the smallest setting it will accept instead.
     """
     return "low" if "gemini" in model.lower() else "off"
 

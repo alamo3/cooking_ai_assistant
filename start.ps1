@@ -76,7 +76,7 @@ if ($Local) {
     Write-Host "  Set it once for cloud inference: setx OPENROUTER_API_KEY `"sk-or-...`"" -ForegroundColor DarkGray
 } else {
     $env:COOK_LLM = "cloud"
-    $cloudModel = if ($env:COOK_OPENROUTER_MODEL) { $env:COOK_OPENROUTER_MODEL } else { "google/gemini-3.8-flash" }
+    $cloudModel = if ($env:COOK_OPENROUTER_MODEL) { $env:COOK_OPENROUTER_MODEL } else { "deepseek/deepseek-v4.1-flash" }
     Write-Host "LLM: $cloudModel via OpenRouter; local $Model only if it errors (no VRAM until then)"
 }
 

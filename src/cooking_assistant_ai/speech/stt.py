@@ -167,7 +167,17 @@ class WhisperCppSTT(STT):
             raise RuntimeError("no ggml whisper model found; set COOK_WHISPER_CPP_MODEL")
         cmd: List[str] = [
             str(binary), "-m", str(model), "--host", self.host, "--port", str(self.port),
-            "-t", str(self.threads), "-nt", "-bs", "1", "-bo", "1", "-nf", "-l", "en",
+            "-t", str(self.threads), "-nt", "-l", "en",
+            # Decoding quality, not model size, is what was mangling short utterances.
+            # Greedy (-bs 1 -bo 1) with temperature fallback off (-nf) is the fastest and
+            # least accurate setting whisper has: it turned "why are we removing the
+            # broccoli" into "wire, we are moving the broccoli" and invented words outright
+            # from pan noise. Beam search costs a second and fixes both; -sns stops
+            # non-speech tokens becoming words.
+            "-bs", os.environ.get("COOK_WHISPER_BEAM", "5"),
+            "-bo", os.environ.get("COOK_WHISPER_BEST_OF", "5"),
+            "-nth", os.environ.get("COOK_WHISPER_NO_SPEECH", "0.6"),
+            "-sns",
             *self.extra_args,
         ]
         log.info("starting whisper-server: %s", " ".join(cmd))
