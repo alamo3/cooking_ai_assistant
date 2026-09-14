@@ -29,6 +29,11 @@ class Step:
     appliance: Optional[str] = None  # "oven" | "stovetop:1" | "air_fryer" | None
     temp_f: Optional[int] = None
     ingredient_ids: Tuple[str, ...] = ()
+    # Whether this is preparation (chopping, rinsing, seasoning) rather than cooking. Decided
+    # by the model when the recipe is imported or created, because a verb match cannot tell
+    # "Tuck the garlic ... and lemon halves around them" from real prep. None means nobody has
+    # judged it and the heuristic in plan.py has to guess.
+    prep: Optional[bool] = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +85,7 @@ class Recipe:
                 appliance=raw.get("appliance"),
                 temp_f=int(raw["temp_f"]) if raw.get("temp_f") is not None else None,
                 ingredient_ids=tuple(str(x) for x in raw.get("ingredient_ids", [])),
+                prep=raw["prep"] if isinstance(raw.get("prep"), bool) else None,
             ))
         return Recipe(
             id=rid,
@@ -102,7 +108,7 @@ class Recipe:
                 {
                     "id": s.id, "text": s.text, "duration_s": s.duration_s,
                     "appliance": s.appliance, "temp_f": s.temp_f,
-                    "ingredient_ids": list(s.ingredient_ids),
+                    "ingredient_ids": list(s.ingredient_ids), "prep": s.prep,
                 }
                 for s in self.steps
             ],

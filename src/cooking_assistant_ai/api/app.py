@@ -311,8 +311,9 @@ _RECIPE_SCHEMA: Dict[str, Any] = {
             "required": ["name", "amount"]}},
         "steps": {"type": "array", "items": {"type": "object", "properties": {
             "text": {"type": "string"}, "duration_s": {"type": ["integer", "null"]},
-            "appliance": {"type": ["string", "null"]}, "temp_f": {"type": ["integer", "null"]}},
-            "required": ["text"]}},
+            "appliance": {"type": ["string", "null"]}, "temp_f": {"type": ["integer", "null"]},
+            "prep": {"type": "boolean"}},
+            "required": ["text", "prep"]}},
     },
     "required": ["title", "servings", "ingredients", "steps"],
 }

@@ -40,13 +40,14 @@ def _parse_dt(value: Optional[str]) -> Optional[datetime]:
 
 def _step_dict(s: Step) -> Dict[str, Any]:
     return {"id": s.id, "text": s.text, "duration_s": s.duration_s, "appliance": s.appliance,
-            "temp_f": s.temp_f, "ingredient_ids": list(s.ingredient_ids)}
+            "temp_f": s.temp_f, "ingredient_ids": list(s.ingredient_ids), "prep": s.prep}
 
 
 def _step(d: Dict[str, Any]) -> Step:
     return Step(id=d["id"], text=d["text"], duration_s=d.get("duration_s"),
                 appliance=d.get("appliance"), temp_f=d.get("temp_f"),
-                ingredient_ids=tuple(d.get("ingredient_ids") or ()))
+                ingredient_ids=tuple(d.get("ingredient_ids") or ()),
+                prep=d["prep"] if isinstance(d.get("prep"), bool) else None)
 
 
 def _overlay_dict(o: Overlay) -> Dict[str, Any]:

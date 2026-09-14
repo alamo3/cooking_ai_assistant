@@ -135,10 +135,16 @@ _LEADING_PREP = re.compile(
 
 
 def is_prep_step(step: Step) -> bool:
-    """Confident enough to *gate* on: the instruction opens with a prep verb.
+    """Is this preparation rather than cooking?
 
-    Used where being wrong is expensive — refusing to let a task start.
+    The model decides this once, when the recipe is imported or created, and the answer is
+    stored on the step. Reading a stored boolean keeps every caller deterministic and free,
+    which matters because this is asked on every context build, every plan render and inside
+    start_task. Only steps nobody has judged fall back to the verb heuristic, which is why
+    that heuristic is strict: being wrong here refuses to let a task start at all.
     """
+    if step.prep is not None:
+        return step.prep
     return step.appliance is None and bool(_LEADING_PREP.match(step.text))
 
 
@@ -149,6 +155,8 @@ def looks_like_prep(step: Step) -> bool:
     early when the recipe only tucks it in later costs nothing; missing it means they chop the
     same thing three times, which was the actual complaint.
     """
+    if step.prep is not None:
+        return step.prep
     return step.appliance is None and bool(_PREP_VERBS.search(step.text))
 
 

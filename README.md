@@ -755,12 +755,33 @@ Looking ahead is the other half. A **NOT READY YET** block lists every pending t
 outstanding prep and when it is due, so the assistant can get the cook through the chopping
 while the previous thing cooks rather than discovering it at the moment of truth.
 
-Two strictnesses, because the cost of being wrong differs:
+### The model decides, once
+
+Whether a step is prep is a judgement, and verb matching was guessing at it. It is now
+**asked of the model when the recipe is imported or created, and stored on the step**
+(`Step.prep`). Runtime reads a boolean, which matters because this is asked on every context
+build, every plan render and inside `start_task` — a model call there would cost latency on
+every turn and make the plan flicker between renders.
+
+`cooking-assistant-ai classify-steps` backfills recipes stored before the field existed. Run
+over the eleven real ones it disagreed with *both* heuristics twelve times, and was right
+every time:
+
+| step | verb match | model |
+|---|---|---|
+| "Press and cube tofu, then toss with soy sauce" | not prep — no such verb | **prep** |
+| "Before beginning, press the tofu in a press" | not prep — prefix defeats it | **prep** |
+| "Cut the **cooked** potatoes in half" | prep | **not prep** |
+| "Combine cooked pasta with the cheese sauce" | prep | **not prep** |
+| "Ladle soup into bowls. Top with baguette" | prep | **not prep** |
+
+No verb list knows that cutting *cooked* potatoes mid-recipe is not mise en place.
+
+The heuristics survive as the fallback for steps nobody has judged, and only there do the two
+strictnesses matter:
 
 - **`is_prep_step`** — the verb must *open* the instruction. Used for gating, where a false
-  positive stops a task starting at all. Matching prep verbs anywhere used to classify "Flip
-  the thighs. Tuck the garlic, thyme and lemon halves around them" as prep, on the word
-  *halves*, which blocked the searing task forever.
+  positive stops a task starting at all.
 - **`looks_like_prep`** — any prep verb, anywhere off the heat. Used for mise en place, where
   a false positive just means suggesting the garlic gets smashed early. Cheap.
 

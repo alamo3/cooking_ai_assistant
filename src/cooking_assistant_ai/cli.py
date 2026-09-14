@@ -180,6 +180,52 @@ def _show(result) -> None:
     print(env["state"])
 
 
+async def classify_steps(args: argparse.Namespace) -> None:
+    """Backfill Step.prep for recipes stored before the model was asked.
+
+    A verb heuristic cannot tell "Tuck the garlic and lemon halves around the thighs" from
+    real prep, and getting it wrong now blocks a task from starting. One model call per
+    recipe, stored, so nothing pays for it at cook time.
+    """
+    from dataclasses import replace as _replace
+
+    from cooking_assistant_ai.llm.factory import build_llm
+    from cooking_assistant_ai.storage.db import Store
+
+    store = Store(args.db or os.environ.get("COOK_DB", "cooking.db"))
+    llm = build_llm()
+    schema = {"type": "object", "properties": {"prep": {"type": "array", "items": {"type": "boolean"}}},
+              "required": ["prep"]}
+    for recipe in store.list_recipes():
+        if not args.all and all(s.prep is not None for s in recipe.steps):
+            print(f"  {recipe.id} {recipe.title}: already classified")
+            continue
+        numbered = "\n".join(f"{n}. {s.text}" for n, s in enumerate(recipe.steps, start=1))
+        raw = await llm.complete([{"role": "user", "content":
+            "For each numbered step, is it preparation the cook does before anything is on "
+            "the heat (chopping, rinsing, peeling, measuring, seasoning raw ingredients, "
+            "making a marinade)? Cooking, resting, assembling and serving are not prep. "
+            "Judge each step as a whole: 'Tuck the garlic and lemon halves around the thighs' "
+            "is cooking, not prep, despite the word halves.\n"
+            f"Answer with one boolean per step, in order.\n\n{numbered}"}], json_schema=schema)
+        try:
+            flags = json.loads(raw)["prep"]
+        except (ValueError, KeyError, TypeError):
+            print(f"  {recipe.id} {recipe.title}: unreadable answer, left alone")
+            continue
+        if len(flags) != len(recipe.steps):
+            print(f"  {recipe.id} {recipe.title}: got {len(flags)} answers for "
+                  f"{len(recipe.steps)} steps, left alone")
+            continue
+        steps = tuple(_replace(s, prep=bool(f)) for s, f in zip(recipe.steps, flags))
+        store.put_recipe(_replace(recipe, steps=steps))
+        marks = "".join("P" if f else "." for f in flags)
+        print(f"  {recipe.id} {recipe.title}: {marks}")
+    close = getattr(llm, "aclose", None)
+    if close:
+        await close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="cooking-assistant-ai")
     sub = p.add_subparsers(dest="cmd")
@@ -207,6 +253,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--cert", help="certificate file (default: generated under ~/.cooking-assistant)")
     s.add_argument("--key", help="private key file")
 
+    cs = sub.add_parser("classify-steps",
+                        help="ask the model which stored recipe steps are prep (once, then stored)")
+    cs.add_argument("--db", default=None)
+    cs.add_argument("--all", action="store_true", help="redo recipes that already have it")
+
     lg = sub.add_parser("log", help="read back a cook: what was said and every tool call")
     lg.add_argument("which", nargs="?", help="session id, or a log filename; default the latest")
     lg.add_argument("--list", action="store_true", help="list the logs and stop")
@@ -220,6 +271,10 @@ def main(argv: Optional[List[str]] = None) -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
     args = build_parser().parse_args(argv)
+    if args.cmd == "classify-steps":
+        asyncio.run(classify_steps(args))
+        return
+
     if args.cmd == "log":
         from cooking_assistant_ai.storage.journal import list_logs, render, summarize
 

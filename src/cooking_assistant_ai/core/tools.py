@@ -993,7 +993,8 @@ def _inventory_text(ctx: ToolContext) -> str:
                 "duration_s": {"type": "integer", "description": "seconds this step takes"},
                 "appliance": {"type": "string", "description": "oven | stovetop | air_fryer | grill, omit if off the heat"},
                 "temp_f": {"type": "integer"},
-                "uses": {"type": "array", "items": {"type": "string"},
+                "prep": {"type": "boolean", "description": "true if this is preparation done before anything is on the heat (chopping, rinsing, seasoning), false for cooking, resting, assembling or serving"},
+                    "uses": {"type": "array", "items": {"type": "string"},
                          "description": "ingredient names this step uses, for shared-prep grouping"},
             }, "required": ["text"]},
         },
@@ -1045,6 +1046,7 @@ def create_recipe(ctx: ToolContext, title: Any = None, servings: Any = None,
             "appliance": scheduler.normalize_appliance(_str(raw.get("appliance"), "appliance")),
             "temp_f": _int(raw.get("temp_f"), "temp_f") or None,
             "ingredient_ids": uses,
+            "prep": raw["prep"] if isinstance(raw.get("prep"), bool) else None,
         })
 
     try:

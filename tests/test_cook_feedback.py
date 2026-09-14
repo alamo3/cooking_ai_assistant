@@ -454,3 +454,45 @@ def test_prep_detection_is_strict_for_gating_and_generous_for_grouping():
         assert is_prep_step(Step(id="s", text=text)), text
     for text in ("Preheat the oven to 425°F.", "Rest the chicken 10 minutes."):
         assert not is_prep_step(Step(id="s", text=text)), text
+
+
+def test_a_stored_judgement_beats_the_heuristic(ctx):
+    """Verb matching guesses; the model was asked once and the answer is on the step."""
+    from cooking_assistant_ai.core.plan import is_prep_step, looks_like_prep
+    from cooking_assistant_ai.model.types import Step
+
+    # the regexes would both say prep: "Cut ..." opens with a prep verb
+    assembling = Step(id="s", text="Cut the cooked potatoes in half and combine with the sauce.",
+                      prep=False)
+    assert not is_prep_step(assembling) and not looks_like_prep(assembling)
+
+    # and both would miss this one: "Press" is not in the verb list at all
+    pressing = Step(id="s", text="Press and cube the tofu, then toss with soy sauce.", prep=True)
+    assert is_prep_step(pressing) and looks_like_prep(pressing)
+
+
+def test_an_unjudged_step_still_falls_back(ctx):
+    """Recipes stored before the field existed must keep working."""
+    from cooking_assistant_ai.core.plan import is_prep_step
+    from cooking_assistant_ai.model.types import Step
+
+    assert Step(id="s", text="Rinse the rice.").prep is None
+    assert is_prep_step(Step(id="s", text="Rinse the rice."))
+    assert not is_prep_step(Step(id="s", text="Rest the chicken 10 minutes."))
+
+
+def test_the_judgement_survives_storage_and_a_restart(ctx):
+    from dataclasses import replace
+    from cooking_assistant_ai.storage import sessions as snap
+
+    recipe = ctx.store.get_recipe("r001")
+    ctx.store.put_recipe(replace(recipe, steps=tuple(
+        replace(s, prep=(n == 2)) for n, s in enumerate(recipe.steps, start=1))))
+    assert [s.prep for s in ctx.store.get_recipe("r001").steps][:3] == [False, True, False]
+
+    # the fixture already has r001 loaded, and a loaded recipe keeps the copy it was loaded
+    # with, so reload it to pick the edit up
+    dispatch(ctx, "unload_recipe", {"recipe_id": "r001"})
+    dispatch(ctx, "load_recipe", {"recipe": "r001"})
+    restored = snap.from_dict(snap.to_dict(ctx.session))
+    assert [s.prep for s in restored.recipes["r001"].steps][:3] == [False, True, False]
