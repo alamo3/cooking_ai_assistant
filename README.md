@@ -561,6 +561,22 @@ message and speaks only the corrected reply. A claim still unbacked after that i
 with a `notice` on the websocket. Timer status remarks ("your rice timer is still running")
 are accepted when such a timer exists.
 
+## Ingredient identity
+
+`Ingredient.key` is the plain grocery name, decided at import, used to match pantry stock and
+to group mise en place. The normaliser it replaces strips descriptors from a blacklist, and
+failed in the ways word lists do:
+
+```
+"cloves"                      -> ''             (on the blacklist as a unit)
+"1 19oz can black beans"      -> 'oz can black bean'
+"tbsp"                        -> 'tbsp'         (importer put the name in the unit field)
+```
+
+The model gets all three right, including recovering "soy sauce" from an ingredient whose
+name field contains only "tbsp" — which no amount of normalising could do. The old
+`ingredient_key` remains the fallback for unjudged ingredients.
+
 ## Diet checking looks at the food, not the spelling
 
 A word list catches "chicken stock". It cannot know that caesar dressing has anchovies in it,
@@ -569,14 +585,32 @@ those names contain the offending word. Tested against the old checker, seven of
 hard cases were wrongly allowed - including rennet, bone broth and parmesan in a vegetarian
 kitchen.
 
-`Ingredient.contains` now holds the model's answer, decided at import: which of meat, pork,
-seafood, dairy, egg, honey, alcohol the ingredient actually contains. Diet rules are then
-plain set arithmetic over those categories, and every one of the seven is caught.
+`Ingredient.contains` and `may_contain` hold the model's answer, decided at import: which of
+meat, pork, seafood, dairy, egg, honey, alcohol the ingredient really has, and which only
+some brands use.
 
-`cooking-assistant-ai classify-steps` backfills it alongside the prep flags, in one model call
-per recipe. The word lists survive as the fallback for unjudged ingredients, along with their
-`PLANT_QUALIFIERS` and `NOT_MEAT_PHRASES` patches - exceptions that only ever existed because
-spelling was being used as evidence.
+**The model may only add a warning; it never bans a dish.** Three passes over a real vegan
+library produced "tofu contains meat", "flour contains meat" and "baguette contains meat",
+which would have refused the cook their own recipes. It turns out to be reliable at judging a
+sentence — prep detection was right every time — and unreliable at recalling what a product is
+made of. So the word lists keep the power to exclude, being narrow but precise, and anything
+the model raises becomes a check-the-label note:
+
+```
+caesar dressing  vegetarian  -> check:    may contain fish or shellfish; check the label
+chicken stock    vegan       -> excluded: chicken is not vegan
+tofu             vegan       -> check:    may contain meat; check the label   (a bad guess,
+                                          annoying rather than harmful)
+```
+
+That is the same asymmetry the rest of the system uses: surfacing costs a sentence, deciding
+wrongly costs the cook their dinner. `cooking-assistant-ai classify-steps` backfills it
+alongside the prep flags and grocery keys.
+
+Every answer is matched back by the name the model echoes, and anything that does not match is
+discarded. An earlier version asked for four arrays indexed by position, and a single slip
+produced "Crushed Garlic contains meat, pork, seafood, dairy, egg, honey, alcohol" with
+nothing able to notice.
 
 ## Dietary restrictions
 

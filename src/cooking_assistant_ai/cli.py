@@ -181,29 +181,49 @@ def _show(result) -> None:
 
 
 async def classify_steps(args: argparse.Namespace) -> None:
-    """Backfill the model's judgements onto stored recipes: which steps are prep, and what
-    each ingredient actually contains.
+    """Backfill the model's judgements onto stored recipes: which steps are prep, what each
+    ingredient contains, and its plain grocery name.
 
-    Both are semantic questions a word list cannot answer. A verb heuristic cannot tell "Tuck
-    the garlic and lemon halves around the thighs" from real prep, and no list of meat words
-    knows that caesar dressing has anchovies in it. Asked once per recipe and stored, so
-    nothing pays for it at cook time.
+    All three are semantic questions a word list cannot answer. A verb heuristic cannot tell
+    "Tuck the garlic and lemon halves around the thighs" from real prep; no list of meat words
+    knows caesar dressing has anchovies in it. Asked once per recipe and stored, so nothing
+    pays for it at cook time.
+
+    Every answer carries the name or number it is about, and anything that does not match is
+    discarded. An earlier version asked for four parallel arrays indexed by position, and one
+    slip produced "Crushed Garlic contains meat, pork, seafood, dairy, egg, honey, alcohol"
+    with nothing able to notice.
     """
     from dataclasses import replace as _replace
 
     from cooking_assistant_ai.llm.factory import build_llm
     from cooking_assistant_ai.storage.db import Store
 
+    CATEGORIES = ["meat", "pork", "seafood", "dairy", "egg", "honey", "alcohol"]
     store = Store(args.db or os.environ.get("COOK_DB", "cooking.db"))
     llm = build_llm()
     schema = {
         "type": "object",
         "properties": {
-            "prep": {"type": "array", "items": {"type": "boolean"}},
-            "contains": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
+            "steps": {"type": "array", "items": {
+                "type": "object",
+                "properties": {"n": {"type": "integer"}, "text": {"type": "string"},
+                               "prep": {"type": "boolean"}},
+                "required": ["n", "prep"]}},
+            "ingredients": {"type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "n": {"type": "integer"},
+                    "name": {"type": "string"},
+                    "key": {"type": "string"},
+                    "contains": {"type": "array", "items": {"type": "string", "enum": CATEGORIES}},
+                    "may_contain": {"type": "array", "items": {"type": "string", "enum": CATEGORIES}},
+                },
+                "required": ["n", "name", "key", "contains", "may_contain"]}},
         },
-        "required": ["prep", "contains"],
+        "required": ["steps", "ingredients"],
     }
+
     for recipe in store.list_recipes():
         judged = (all(s.prep is not None for s in recipe.steps)
                   and all(i.contains is not None for i in recipe.ingredients))
@@ -211,51 +231,82 @@ async def classify_steps(args: argparse.Namespace) -> None:
             print(f"  {recipe.id} {recipe.title}: already judged")
             continue
 
-        steps = "\n".join(f"{n}. {s.text}" for n, s in enumerate(recipe.steps, start=1))
-        items = "\n".join(f"{n}. {i.name}" for n, i in enumerate(recipe.ingredients, start=1))
+        step_lines = "\n".join(f"{n}. {s.text}" for n, s in enumerate(recipe.steps, start=1))
+        item_lines = "\n".join(f"{n}. {i.name}" for n, i in enumerate(recipe.ingredients, start=1))
         raw = await llm.complete([{"role": "user", "content":
-            "Two questions about one recipe.\n\n"
-            "PREP: for each numbered step, is it preparation the cook does before anything is "
-            "on the heat (chopping, rinsing, peeling, measuring, seasoning raw ingredients, "
-            "making a marinade)? Cooking, resting, assembling and serving are not prep. Judge "
-            "each step whole: 'Tuck the garlic and lemon halves around the thighs' is cooking, "
-            "not prep, despite the word halves. One boolean per step, in order.\n\n"
-            f"{steps}\n\n"
-            "CONTAINS: for each numbered ingredient, which of meat, pork, seafood, dairy, egg, "
-            "honey, alcohol does it actually contain? Empty list when none. Judge the food, "
-            "not the word: caesar dressing contains seafood (anchovies), marshmallows contain "
-            "meat (gelatin), refried beans often contain meat (lard), parmesan contains dairy "
-            "and meat (animal rennet), kimchi often contains seafood, worcestershire contains "
-            "seafood, mirin contains alcohol. One list per ingredient, in order.\n\n"
-            f"{items}"}], json_schema=schema)
+            f"Recipe: {recipe.title}\n\n"
+            "STEPS - repeat each step's number and answer prep: is it preparation done before "
+            "anything is on the heat (chopping, rinsing, peeling, measuring, seasoning raw "
+            "ingredients, making a marinade)? Cooking, resting, assembling and serving are "
+            "not prep. Judge each step whole: 'Tuck the garlic and lemon halves around the "
+            "thighs' is cooking despite the word halves.\n\n"
+            f"{step_lines}\n\n"
+            "INGREDIENTS - repeat each ingredient's number and name exactly as written, then:\n"
+            "key: the plain grocery name, lowercase, no amount, preparation or brand. "
+            "'Medium Onion (White, Yellow or Brown, Chopped)' and 'onions' are both 'onion'; "
+            "'1 19oz can black beans' is 'black beans'. Same item, same key; different items, "
+            "different keys - ground coriander seed is not fresh coriander leaf.\n"
+            "contains: which categories the ordinary product genuinely contains, empty when "
+            "none. Judge the food, not the word: caesar dressing contains seafood, "
+            "marshmallows contain meat, parmesan contains dairy and meat. But soy sauce has "
+            "no seafood, vinegar is not alcoholic, and a vegetable is just a vegetable - do "
+            "not guess.\n"
+            "may_contain: categories only SOME brands use, such as anchovy in some gochujang "
+            "or fish sauce in some kimchi. These raise a check-the-label warning instead of "
+            "banning the dish, so anything brand-dependent belongs here.\n\n"
+            f"{item_lines}"}], json_schema=schema)
+
         try:
             answer = json.loads(raw)
-            flags = answer["prep"]
-        except (ValueError, KeyError, TypeError):
+        except ValueError:
             print(f"  {recipe.id} {recipe.title}: unreadable answer, left alone")
             continue
 
-        new_steps = recipe.steps
-        if len(flags) == len(recipe.steps):
-            new_steps = tuple(_replace(s, prep=bool(f)) for s, f in zip(recipe.steps, flags))
-        else:
-            print(f"  {recipe.id}: {len(flags)} step answers for {len(recipe.steps)} steps")
+        by_n = {}
+        for row in answer.get("steps") or []:
+            if isinstance(row, dict) and isinstance(row.get("n"), int):
+                by_n[row["n"]] = bool(row.get("prep"))
+        new_steps = tuple(_replace(s, prep=by_n[n]) if n in by_n else s
+                          for n, s in enumerate(recipe.steps, start=1))
 
-        cats = answer.get("contains") or []
-        new_items = recipe.ingredients
-        if len(cats) == len(recipe.ingredients):
-            new_items = tuple(
-                _replace(i, contains=tuple(str(c).strip().lower() for c in (row or [])))
-                for i, row in zip(recipe.ingredients, cats))
-        else:
-            print(f"  {recipe.id}: {len(cats)} ingredient answers for "
-                  f"{len(recipe.ingredients)} ingredients")
+        # Matched on the name the model echoed back, so a shifted or partial answer drops the
+        # rows it got wrong instead of relabelling the wrong ingredient.
+        answers, mismatched = {}, 0
+        for row in answer.get("ingredients") or []:
+            if not isinstance(row, dict):
+                continue
+            n, name = row.get("n"), str(row.get("name", "")).strip().lower()
+            if not isinstance(n, int) or not 1 <= n <= len(recipe.ingredients):
+                continue
+            if recipe.ingredients[n - 1].name.strip().lower() != name:
+                mismatched += 1
+                continue
+            answers[n] = row
 
-        store.put_recipe(_replace(recipe, steps=new_steps, ingredients=new_items))
+        new_items = []
+        for n, item in enumerate(recipe.ingredients, start=1):
+            row = answers.get(n)
+            if row is None:
+                new_items.append(item)
+                continue
+            clean = lambda field: tuple(  # noqa: E731
+                str(c).strip().lower() for c in (row.get(field) or [])
+                if str(c).strip().lower() in CATEGORIES)
+            key = str(row.get("key") or "").strip().lower()
+            new_items.append(_replace(item, key=key or item.key,
+                                      contains=clean("contains"),
+                                      may_contain=clean("may_contain")))
+
+        store.put_recipe(_replace(recipe, steps=new_steps, ingredients=tuple(new_items)))
         marks = "".join("P" if s.prep else "." for s in new_steps)
         found = sorted({c for i in new_items for c in (i.contains or ())})
-        print(f"  {recipe.id} {recipe.title}: {marks}"
-              + (f"   contains: {', '.join(found)}" if found else ""))
+        maybe = sorted({c for i in new_items for c in (i.may_contain or ())})
+        note = f"   contains: {', '.join(found)}" if found else ""
+        note += f"   may contain: {', '.join(maybe)}" if maybe else ""
+        if mismatched:
+            note += f"   ({mismatched} answer(s) did not match an ingredient, skipped)"
+        print(f"  {recipe.id} {recipe.title}: {marks}{note}")
+
     close = getattr(llm, "aclose", None)
     if close:
         await close()

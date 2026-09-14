@@ -96,12 +96,19 @@ def _plant_based(name: str) -> bool:
     return any(q in low for q in PLANT_QUALIFIERS)
 
 
-def check_known(name: str, contains: Tuple[str, ...], diet: str) -> Optional[Violation]:
-    """Judge an ingredient from what it is known to contain, not from how it is spelled."""
+def check_known(name: str, contains: Tuple[str, ...], diet: str,
+                may_contain: Tuple[str, ...] = ()) -> Optional[Violation]:
+    """Judge an ingredient from what it is known to contain, not from how it is spelled.
+
+    `may_contain` is the brand-dependent case - anchovy in some gochujang, fish sauce in some
+    kimchi. Treating those as definite would refuse a cook their own recipes, so they get the
+    same "check the label" severity that halal meat gets.
+    """
     diet = (diet or "none").lower()
     if diet == "none":
         return None
     have = {c.strip().lower() for c in contains}
+    maybe = {c.strip().lower() for c in may_contain} - have
     for category in _EXCLUDED_BY_DIET.get(diet, ()):
         if category in have:
             reason = _CATEGORY_REASON.get(category, category)
@@ -109,15 +116,31 @@ def check_known(name: str, contains: Tuple[str, ...], diet: str) -> Optional[Vio
     for category in _CHECK_BY_DIET.get(diet, ()):
         if category in have:
             return Violation(name, category, f"{name} must be halal-certified", "check")
+    for category in _EXCLUDED_BY_DIET.get(diet, ()):
+        if category in maybe:
+            reason = _CATEGORY_REASON.get(category, category)
+            return Violation(name, category,
+                             f"some {name} contains {reason}; check the label", "check")
     return None
 
 
-def check_ingredient(name: str, diet: str,
-                     contains: Optional[Tuple[str, ...]] = None) -> Optional[Violation]:
+def check_ingredient(name: str, diet: str, contains: Optional[Tuple[str, ...]] = None,
+                     may_contain: Optional[Tuple[str, ...]] = None) -> Optional[Violation]:
     """`contains` is the model's judgement, stored on the Ingredient. When it is present it
     is the answer; the word lists below are only for ingredients nobody has judged."""
-    if contains is not None:
-        return check_known(name, contains, diet)
+    # The model's judgement only ever *adds* a warning; it never bans a dish. Measured over
+    # three passes of a real vegan library it produced "tofu contains meat", "flour contains
+    # meat" and "baguette contains meat", which would have refused the cook their own
+    # recipes. It is good at judging a sentence and unreliable at recalling what a product is
+    # made of, so the word lists below - which are precise, if narrow - keep the power to
+    # exclude, and anything the model raises becomes a check-the-label note.
+    advisory = None
+    if contains is not None or may_contain is not None:
+        found = check_known(name, contains or (), diet, may_contain or ())
+        if found is not None:
+            advisory = Violation(found.ingredient, found.term,
+                                 f"{name} may contain {_CATEGORY_REASON.get(found.term, found.term)}; "
+                                 f"check the label", "check")
     diet = (diet or "none").lower()
     if diet == "none":
         return None
@@ -129,7 +152,7 @@ def check_ingredient(name: str, diet: str,
             term = _has(name, DAIRY_AND_EGG)
             if term:
                 return Violation(name, term, f"{term} is not vegan", "excluded")
-        return None
+        return advisory
     if diet == "halal":
         term = _has(name, PORK)
         if term:
@@ -140,8 +163,8 @@ def check_ingredient(name: str, diet: str,
         term = _has(name, MEAT)
         if term:
             return Violation(name, term, f"{term} must be halal-certified", "check")
-        return None
-    return None
+        return advisory
+    return advisory
 
 
 def check_recipe(ingredients: List[Any], diet: str) -> List[Violation]:
@@ -149,7 +172,8 @@ def check_recipe(ingredients: List[Any], diet: str) -> List[Violation]:
     out: List[Violation] = []
     for item in ingredients:
         name = getattr(item, "name", item)
-        v = check_ingredient(str(name), diet, getattr(item, "contains", None))
+        v = check_ingredient(str(name), diet, getattr(item, "contains", None),
+                             getattr(item, "may_contain", None))
         if v is not None:
             out.append(v)
     return out

@@ -23,6 +23,15 @@ class Ingredient:
     # dressing, ("egg",) for mayonnaise. None means nobody judged it and the word lists in
     # diet.py have to guess from the name, which cannot see inside a compound food.
     contains: Optional[Tuple[str, ...]] = None
+    # The plain grocery name, so "Medium Onion (White, Yellow or Brown, Chopped)" and "onions"
+    # are known to be the same thing and their prep can be done once. None falls back to the
+    # normaliser in plan.py, which strips descriptors from a blacklist and cannot cope with an
+    # amount that ended up inside the name.
+    key: Optional[str] = None
+    # Animal products some brands use and others do not: anchovy in gochujang, fish sauce in
+    # kimchi. Flagging these as definite would refuse a cook their own vegan recipes, so they
+    # raise the existing "check the label" severity instead of excluding the dish.
+    may_contain: Optional[Tuple[str, ...]] = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +89,9 @@ class Recipe:
                 amount=float(raw.get("amount", 1)),
                 unit=raw.get("unit"),
                 contains=tuple(raw["contains"]) if isinstance(raw.get("contains"), list) else None,
+                key=(str(raw["key"]).strip().lower() or None) if raw.get("key") else None,
+                may_contain=(tuple(raw["may_contain"])
+                             if isinstance(raw.get("may_contain"), list) else None),
             ))
         steps = []
         for n, raw in enumerate(d.get("steps", []), start=1):
@@ -107,7 +119,9 @@ class Recipe:
             "servings": self.servings,
             "ingredients": [
                 {"id": i.id, "name": i.name, "amount": i.amount, "unit": i.unit,
-                 "contains": list(i.contains) if i.contains is not None else None}
+                 "contains": list(i.contains) if i.contains is not None else None,
+                 "key": i.key,
+                 "may_contain": list(i.may_contain) if i.may_contain is not None else None}
                 for i in self.ingredients
             ],
             "steps": [

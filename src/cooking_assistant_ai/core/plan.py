@@ -51,6 +51,20 @@ def _singular(word: str) -> str:
     return word
 
 
+def key_for(ingredient) -> str:
+    """The grocery identity of an ingredient, for matching stock and grouping prep.
+
+    Prefers the model's answer, stored at import. The normaliser below is the fallback, and
+    it fails in ways a word list always will: "cloves" the spice normalises to nothing at all,
+    because cloves is on the descriptor blacklist as a unit, and "1 19oz can black beans"
+    keeps the amount because the importer put it in the name.
+    """
+    stored = getattr(ingredient, "key", None)
+    if stored:
+        return stored
+    return ingredient_key(getattr(ingredient, "name", str(ingredient)))
+
+
 def ingredient_key(name: str) -> str:
     """Normalize an ingredient name so 'Garlic cloves, smashed' and 'garlic' match."""
     text = name.lower()
@@ -316,7 +330,7 @@ def prep_groups(session: Session) -> List[PrepGroup]:
         subs = {s.ingredient_id: s for s in ov.substitutions}
         for ing in r.ingredients:
             name = subs[ing.id].replacement if ing.id in subs else ing.name
-            key = ingredient_key(name)
+            key = key_for(ing) if name == ing.name else ingredient_key(name)
             if not key or key in _STAPLES:
                 continue
             steps = [s for s in r.steps if ing.id in s.ingredient_ids and looks_like_prep(s) and s.id not in ov.skipped_steps]

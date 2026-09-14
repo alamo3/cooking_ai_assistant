@@ -308,8 +308,9 @@ _RECIPE_SCHEMA: Dict[str, Any] = {
         "servings": {"type": "integer"},
         "ingredients": {"type": "array", "items": {"type": "object", "properties": {
             "name": {"type": "string"}, "amount": {"type": "number"}, "unit": {"type": ["string", "null"]},
-            "contains": {"type": "array", "items": {"type": "string"}}},
-            "required": ["name", "amount", "contains"]}},
+            "contains": {"type": "array", "items": {"type": "string"}},
+            "key": {"type": "string"}},
+            "required": ["name", "amount", "contains", "key"]}},
         "steps": {"type": "array", "items": {"type": "object", "properties": {
             "text": {"type": "string"}, "duration_s": {"type": ["integer", "null"]},
             "appliance": {"type": ["string", "null"]}, "temp_f": {"type": ["integer", "null"]},
@@ -424,6 +425,12 @@ async def extract_recipe(source: str, llm: LLM, store: Store) -> Recipe:
     prompt = (
         "Extract the recipe below as JSON. Rules: one ingredient entry per line, with amount as a number "
         "(convert fractions like 1/2 to 0.5; use 1 if no amount is given), unit as a short string (g, ml, cup, "
+        "key: the plain grocery name, lowercase, no amount, no preparation and no brand: "
+        "\"Medium Onion (White, Yellow or Brown, Chopped)\" and \"onions\" are both \"onion\", "
+        "\"1 19oz can black beans\" is \"black beans\", \"extra firm tofu, pressed\" is \"tofu\". "
+        "Two ingredients that a cook would buy as the same item must get the same key, and "
+        "two that are different items must not: ground coriander seed is not fresh coriander "
+        "leaf. "
         "contains: which of meat, pork, seafood, dairy, egg, honey, alcohol this ingredient "
         "actually contains, as a list, empty when none. Judge the food, not the word: caesar "
         "dressing contains seafood (anchovies), marshmallows contain meat (gelatin), refried "

@@ -119,7 +119,9 @@ def test_hidden_animal_products_a_word_list_cannot_see():
     ]
     for name, contains, diet in hidden:
         v = check_ingredient(name, diet, contains)
-        assert v is not None and v.severity == "excluded", f"{name} slipped past {diet}"
+        # Surfaced, not banned: the model is unreliable enough at recalling what a product is
+        # made of that it is only ever allowed to raise a warning.
+        assert v is not None and v.severity == "check", f"{name} slipped past {diet}"
 
 
 def test_a_stored_judgement_also_prevents_false_alarms():
@@ -129,6 +131,31 @@ def test_a_stored_judgement_also_prevents_false_alarms():
     assert check_ingredient("beef tomato", "halal", ()) is None
     assert check_ingredient("vegan butter", "vegan", ()) is None
     assert check_ingredient("oat milk", "vegan", ()) is None
+
+
+def test_the_model_can_warn_but_never_ban():
+    """Three passes over a real vegan library produced "tofu contains meat", "flour contains
+    meat" and "baguette contains meat". Trusting that to exclude would have refused the cook
+    their own recipes, so a model judgement can only raise a check-the-label note."""
+    from cooking_assistant_ai.core.diet import check_ingredient
+
+    wrong = check_ingredient("tofu", "vegan", ("meat",))
+    assert wrong is not None and wrong.severity == "check"
+
+    # the word lists keep the power to exclude, because they are precise where it is wrong
+    assert check_ingredient("chicken stock", "vegan", ()).severity == "excluded"
+    assert check_ingredient("lard", "halal", ()).severity == "excluded"
+    assert check_ingredient("olive oil", "vegan", ()) is None
+
+
+def test_no_real_recipe_is_refused_by_a_model_guess(ctx):
+    from cooking_assistant_ai.core.diet import check_recipe
+    from dataclasses import replace
+
+    recipe = ctx.store.get_recipe("r002")
+    sabotaged = tuple(replace(i, contains=("meat",)) for i in recipe.ingredients)
+    verdicts = check_recipe(list(sabotaged), "vegan")
+    assert verdicts and all(v.severity == "check" for v in verdicts)
 
 
 def test_halal_separates_forbidden_from_unverifiable():

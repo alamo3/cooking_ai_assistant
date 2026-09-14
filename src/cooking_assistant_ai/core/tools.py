@@ -1028,7 +1028,8 @@ def create_recipe(ctx: ToolContext, title: Any = None, servings: Any = None,
                          "amount": _float(raw.get("amount"), "amount") or 1.0,
                          "unit": _str(raw.get("unit"), "unit"),
                          "contains": ([str(x).strip().lower() for x in raw["contains"]]
-                                      if isinstance(raw.get("contains"), list) else None)})
+                                      if isinstance(raw.get("contains"), list) else None),
+                         "key": (str(raw["key"]).strip().lower() or None) if raw.get("key") else None})
         by_name[iname.lower()] = iid
 
     step_rows = []
