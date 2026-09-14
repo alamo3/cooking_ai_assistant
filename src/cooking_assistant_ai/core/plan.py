@@ -124,8 +124,101 @@ _PREP_VERBS = re.compile(
 )
 
 
+# The verb has to *open* the instruction. Searching anywhere in the text matched "lemon
+# halves" in "Flip the thighs. Tuck the garlic, thyme and lemon halves around them", which
+# made a searing step look like prep. Harmless while that only affected mise en place
+# grouping; not harmless once prep gates whether a task may start.
+_LEADING_PREP = re.compile(
+    r"^\s*(?:first|then|next|now|meanwhile)?[,\s]*"
+    r"(?:finely|roughly|thinly|coarsely|carefully|quickly|well)?\s*"
+    + _PREP_VERBS.pattern, re.I)
+
+
 def is_prep_step(step: Step) -> bool:
+    """Confident enough to *gate* on: the instruction opens with a prep verb.
+
+    Used where being wrong is expensive — refusing to let a task start.
+    """
+    return step.appliance is None and bool(_LEADING_PREP.match(step.text))
+
+
+def looks_like_prep(step: Step) -> bool:
+    """Generous: any prep verb anywhere off the heat.
+
+    Used for mise en place, where being wrong is cheap. Suggesting the cook smash the garlic
+    early when the recipe only tucks it in later costs nothing; missing it means they chop the
+    same thing three times, which was the actual complaint.
+    """
     return step.appliance is None and bool(_PREP_VERBS.search(step.text))
+
+
+def prep_blockers(session: Session, task) -> List[Step]:
+    """Prep in this task's recipe that has not been done yet.
+
+    The cook's complaint: being told to start dumping things into a pan when the garlic is
+    still whole. Anything the recipe asks you to chop, rinse or season before the step this
+    task covers has to be finished first, and nothing was checking.
+
+    Ordered by position in the recipe rather than by ingredient, because ingredient_ids are
+    only populated when a recipe was imported carefully, while step order always exists.
+    """
+    recipe = session.recipes.get(task.recipe_id)
+    if recipe is None or not task.step_ids:
+        return []
+    overlay = session.overlays[recipe.id]
+    positions = [recipe.step_index(sid) for sid in task.step_ids]
+    positions = [n for n in positions if n > 0]
+    if not positions:
+        return []
+    first = min(positions)
+    out: List[Step] = []
+    for step in recipe.steps:
+        n = recipe.step_index(step.id)
+        if n <= 0 or n >= first:
+            continue
+        if step.id in session.completed_steps or step.id in overlay.skipped_steps:
+            continue
+        if is_prep_step(step):
+            out.append(step)
+    return out
+
+
+def describe_blockers(session: Session, task) -> str:
+    blockers = prep_blockers(session, task)
+    if not blockers:
+        return ""
+    return "; ".join(b.text.rstrip(".") for b in blockers)
+
+
+def unready_tasks(session: Session) -> List[Tuple[Any, List[Step]]]:
+    """Every open task whose prep is outstanding, so the plan can look ahead rather than
+    discovering it at the moment the cook is asked to start."""
+    out = []
+    for task in session.tasks.values():
+        if task.status != "pending":
+            continue
+        blockers = prep_blockers(session, task)
+        if blockers:
+            out.append((task, blockers))
+    return out
+
+
+def render_readiness(session: Session) -> str:
+    """What is not ready yet, so the assistant can see it coming.
+
+    The gate on start_task stops the worst outcome, but discovering it at the moment the cook
+    is told to start is still too late. This puts it in front of the model a turn early.
+    """
+    rows = unready_tasks(session)
+    if not rows:
+        return ""
+    lines = ["NOT READY YET (prep outstanding; start_task will refuse these)"]
+    for task, blockers in sorted(rows, key=lambda kv: kv[0].start_at or datetime.max):
+        when = f" at {fmt_time(task.start_at)}" if task.start_at else ""
+        lines.append(f"  {task.label}{when}: needs " +
+                     "; ".join(b.text.rstrip(".") for b in blockers))
+    lines.append("Get the cook through this prep before its task is due, not when it starts.")
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- prep groups
@@ -180,7 +273,7 @@ def prep_groups(session: Session) -> List[PrepGroup]:
             key = ingredient_key(name)
             if not key or key in _STAPLES:
                 continue
-            steps = [s for s in r.steps if ing.id in s.ingredient_ids and is_prep_step(s) and s.id not in ov.skipped_steps]
+            steps = [s for s in r.steps if ing.id in s.ingredient_ids and looks_like_prep(s) and s.id not in ov.skipped_steps]
             entry = PrepEntry(
                 recipe_id=r.id, recipe_title=r.title,
                 ingredient=Ingredient(ing.id, name, ing.amount, ing.unit), amount=ing.amount * ov.scale_factor,

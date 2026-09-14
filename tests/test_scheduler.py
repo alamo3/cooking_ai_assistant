@@ -37,13 +37,14 @@ def test_alap_to_plating(ctx):
     assert t.start_at == ctx.session.target_plating - timedelta(seconds=1500)
 
 
-def test_after_dependency_and_shift_on_actual_start(ctx, clock):
+def test_after_dependency_and_shift_on_actual_start(ctx, clock, prepped):
     ok(ctx, "add_task", label="sear", recipe_id="r001", step_ids=["r001-s3"])
     ok(ctx, "add_task", label="roast", recipe_id="r001", step_ids=["r001-s5"], after="sear")
     sear, roast = ctx.session.find_task("sear"), ctx.session.find_task("roast")
     assert roast.start_at == sear.end_at
     # The sear runs long: start it 4 minutes late and the roast shifts.
     clock.advance(240)
+    prepped(ctx, "sear")
     ok(ctx, "start_task", task_id="sear")
     assert roast.start_at == sear.end_at == T0 + timedelta(seconds=240 + 300)
 
@@ -56,7 +57,7 @@ def test_must_finish_by_task_is_alap_against_that_task(ctx):
     assert sear.end_at == roast.start_at
 
 
-def test_after_chain_feeding_alap_task_is_just_in_time(ctx):
+def test_after_chain_feeding_alap_task_is_just_in_time(ctx, prepped):
     """prep -> sear -> roast -> rest(must_finish_by plating): the whole chain backs up to plating."""
     ok(ctx, "set_target_plating", time="7:30 PM")
     ok(ctx, "add_task", label="prep", recipe_id="r001", step_ids=["r001-s2"])
@@ -72,6 +73,7 @@ def test_after_chain_feeding_alap_task_is_just_in_time(ctx):
     assert prep.end_at == sear.start_at
     assert ctx.session.find_task("salad").start_at == T0
     # searing early pins the sear; the roast stays just-in-time for the rest
+    prepped(ctx, "sear")
     ok(ctx, "start_task", task_id="sear")
     assert sear.end_at == T0 + timedelta(seconds=360)
     assert roast.start_at == rest.start_at - timedelta(seconds=1500)
@@ -131,9 +133,10 @@ def test_next_action_and_timeline_render(ctx):
     assert "Conflicts: none" in plan
 
 
-def test_replan_clears_only_pending(ctx):
+def test_replan_clears_only_pending(ctx, prepped):
     ok(ctx, "add_task", label="a", duration_s=600)
     ok(ctx, "add_task", label="b", duration_s=600)
+    prepped(ctx, "a")
     ok(ctx, "start_task", task_id="a")
     ok(ctx, "replan", reason="chicken ran long")
     assert set(ctx.session.tasks) == {"t_001"}

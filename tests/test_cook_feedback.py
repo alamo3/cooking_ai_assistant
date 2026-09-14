@@ -140,7 +140,7 @@ def test_the_model_is_told_to_search_before_inventing():
 
 # ------------------------------------------------------------------- the appliance board
 
-def test_the_board_shows_what_is_on_what(ctx):
+def test_the_board_shows_what_is_on_what(ctx, prepped):
     from cooking_assistant_ai.core.appliances import board, render_board
 
     dispatch(ctx, "load_recipe", {"recipe": "r001"})
@@ -150,6 +150,7 @@ def test_the_board_shows_what_is_on_what(ctx):
     dispatch(ctx, "add_task", {"label": "sear", "recipe_id": "r001", "step_ids": ["r001-s3"],
                                "appliance": "stovetop", "duration_s": 300, "before": "chicken roast"})
     dispatch(ctx, "add_task", {"label": "rice", "appliance": "rice cooker", "duration_s": 1800})
+    prepped(ctx, "sear")
     dispatch(ctx, "start_task", {"task_id": "sear"})
     dispatch(ctx, "start_task", {"task_id": "rice"})
 
@@ -394,3 +395,62 @@ def test_pan_size_survives_a_restart(ctx):
                                "duration_s": 1200, "pan": "large"})
     restored = snap.from_dict(snap.to_dict(ctx.session))
     assert next(iter(restored.tasks.values())).pan == "large"
+
+
+# ------------------------------------------------- do not send anyone to a pan unprepared
+
+def test_a_task_will_not_start_with_prep_outstanding(ctx):
+    """"It asked me to start dumping things into a pan I didn't have ready.\""""
+    dispatch(ctx, "load_recipe", {"recipe": "r001"})
+    dispatch(ctx, "add_task", {"label": "sear", "recipe_id": "r001", "step_ids": ["r001-s3"],
+                               "appliance": "stovetop", "duration_s": 300})
+    r = dispatch(ctx, "start_task", {"task_id": "sear"})
+    assert not r.ok
+    assert "not ready to start" in r.reason and "season" in r.reason
+    assert "mark_complete" in r.reason and "skip_step" in r.reason   # a way through, not a wall
+
+    dispatch(ctx, "mark_complete", {"step_id": "r001-s2"})
+    assert dispatch(ctx, "start_task", {"task_id": "sear"}).ok
+
+
+def test_skipping_the_prep_also_unblocks_it(ctx):
+    dispatch(ctx, "load_recipe", {"recipe": "r001"})
+    dispatch(ctx, "add_task", {"label": "sear", "recipe_id": "r001", "step_ids": ["r001-s3"],
+                               "appliance": "stovetop", "duration_s": 300})
+    dispatch(ctx, "skip_step", {"step_id": "r001-s2", "reason": "already seasoned"})
+    assert dispatch(ctx, "start_task", {"task_id": "sear"}).ok
+
+
+def test_the_plan_says_what_is_not_ready_before_it_is_due(ctx):
+    """The gate stops the worst case; this is the looking-ahead the cook asked for."""
+    from cooking_assistant_ai.core.plan import render_readiness
+
+    dispatch(ctx, "load_recipe", {"recipe": "r001"})
+    dispatch(ctx, "load_recipe", {"recipe": "r002"})
+    dispatch(ctx, "add_task", {"label": "sear chicken", "recipe_id": "r001",
+                               "step_ids": ["r001-s3"], "appliance": "stovetop", "duration_s": 300})
+    dispatch(ctx, "add_task", {"label": "simmer rice", "recipe_id": "r002",
+                               "step_ids": ["r002-s3"], "appliance": "stovetop", "duration_s": 900})
+    text = render_readiness(ctx.session)
+    assert "sear chicken" in text and "season" in text
+    assert "simmer rice" in text and "Rinse the rice" in text
+
+    for sid in ("r001-s2", "r002-s1"):
+        dispatch(ctx, "mark_complete", {"step_id": sid})
+    assert render_readiness(ctx.session) == ""
+
+
+def test_prep_detection_is_strict_for_gating_and_generous_for_grouping():
+    """"Tuck the garlic, thyme and lemon halves around them" is not prep: 'halves' is a noun."""
+    from cooking_assistant_ai.core.plan import is_prep_step, looks_like_prep
+    from cooking_assistant_ai.model.types import Step
+
+    tucking = Step(id="s", text="Flip the thighs. Tuck the garlic, thyme and lemon halves around them.")
+    assert not is_prep_step(tucking), "would block a searing task from ever starting"
+    assert looks_like_prep(tucking), "but still worth grouping the garlic with other prep"
+
+    for text in ("Pat the chicken dry and season all over.", "Rinse the rice in a sieve.",
+                 "Finely chop the shallots.", "Then mince the garlic."):
+        assert is_prep_step(Step(id="s", text=text)), text
+    for text in ("Preheat the oven to 425°F.", "Rest the chicken 10 minutes."):
+        assert not is_prep_step(Step(id="s", text=text)), text

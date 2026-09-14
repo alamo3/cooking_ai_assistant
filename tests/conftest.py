@@ -39,3 +39,23 @@ def ctx(session: Session, clock: Clock, store: Store) -> ToolContext:
 
     store.set_appliances(list(CATALOGUE))
     return ToolContext(session, clock, store)
+
+
+@pytest.fixture
+def prepped():
+    """Mark the prep a task depends on as done, so tests about scheduling are about scheduling.
+
+    start_task refuses a task whose chopping or seasoning is outstanding, which is the point,
+    but most tests are not about that.
+    """
+    from cooking_assistant_ai.core.plan import prep_blockers
+    from cooking_assistant_ai.core.tools import dispatch
+
+    def go(ctx, task_ref: str):
+        task = ctx.session.find_task(task_ref)
+        assert task is not None, f"no task {task_ref!r}"
+        for step in prep_blockers(ctx.session, task):
+            dispatch(ctx, "mark_complete", {"step_id": step.id})
+        return task
+
+    return go

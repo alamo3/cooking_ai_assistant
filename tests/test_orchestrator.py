@@ -284,6 +284,10 @@ async def test_unrecorded_progress_is_nudged_not_forced(orch):
     llm.push(
         "Great, it'll take about 25 minutes.",                       # says nothing to the state
         call("start_task", task_id="chicken roast"),                  # after the nudge
+        # Refused while the seasoning step is outstanding. The cook just said the chicken is
+        # seared, so the honest fix is to record that and try again, inside the same turn.
+        call("mark_complete", step_ids=["r001-s2"]),
+        call("start_task", task_id="chicken roast"),
         "Chicken's roasting, 25 minutes.",
     )
     dispatch(o.ctx, "add_task", {"label": "chicken roast", "recipe_id": "r001",
@@ -311,7 +315,7 @@ async def test_no_nudge_when_the_model_already_recorded_it(orch):
     assert not any("drifted" in e.text for e in out.events if isinstance(e, Notice))
 
 
-def test_drift_warnings_surface_contradictions(session, clock):
+def test_drift_warnings_surface_contradictions(session, clock, prepped):
     from datetime import timedelta
 
     from cooking_assistant_ai.core.scheduler import drift_warnings
@@ -325,6 +329,7 @@ def test_drift_warnings_surface_contradictions(session, clock):
                                 "task_id": "chicken roast"})
     warnings = drift_warnings(session, clock.now())
     assert any("still pending" in w and "start_task" in w for w in warnings)
+    prepped(ctx, "chicken roast")
     dispatch(ctx, "start_task", {"task_id": "chicken roast"})
     assert drift_warnings(session, clock.now()) == []
     # an active task long past its window is also worth asking about

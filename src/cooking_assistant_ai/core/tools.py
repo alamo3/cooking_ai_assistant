@@ -553,6 +553,14 @@ def start_task(ctx: ToolContext, task_id: Any = None) -> Tuple[str, Optional[str
         raise ToolError(f"{t.label} is already active (started {fmt_time(t.actual_start)})")
     if t.status == "complete":
         raise ToolError(f"{t.label} is already complete")
+    from cooking_assistant_ai.core.plan import prep_blockers
+
+    blockers = prep_blockers(ctx.session, t)
+    if blockers:
+        what = "; ".join(b.text.rstrip(".") for b in blockers)
+        raise ToolError(
+            f"{t.label} is not ready to start: {what}. Walk the cook through that first and "
+            f"call mark_complete for it, or skip_step if they are not doing it.")
     t.status = "active"
     t.actual_start = ctx.now
     t.start_at = ctx.now

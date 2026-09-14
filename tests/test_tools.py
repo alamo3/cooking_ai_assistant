@@ -54,15 +54,16 @@ def test_timer_label_validation_and_lifecycle(ctx):
     assert not dispatch(ctx, "cancel_timer", {"timer_id": "tm_001"}).ok  # already cancelled
 
 
-def test_mark_complete_cascades_to_task_and_cancels_timers(ctx):
+def test_mark_complete_cascades_to_task_and_cancels_timers(ctx, prepped):
     dispatch(ctx, "add_task", {"label": "sear", "recipe_id": "r001", "step_ids": ["r001-s3", "r001-s4"]})
+    prepped(ctx, "sear")
     dispatch(ctx, "start_task", {"task_id": "sear"})
     dispatch(ctx, "set_timer", {"label": "sear skin side", "duration_s": 300, "task_id": "sear"})
     r = dispatch(ctx, "mark_complete", {"step_ids": ["r001-s3", "r001-s4"]})
     assert r.ok
     assert ctx.session.find_task("sear").status == "complete"
     assert ctx.session.timers["tm_001"].status == "cancelled"
-    assert "steps 3-4 done" in render_progress(ctx.session)
+    assert "steps 2-4 done" in render_progress(ctx.session)
     assert not dispatch(ctx, "mark_complete", {"task_id": "sear"}).ok  # already complete
 
 
@@ -94,11 +95,12 @@ def test_remember_and_inventory(ctx):
     assert not bad.ok and "tracked in g" in bad.reason
 
 
-def test_load_and_unload_recipe(ctx):
+def test_load_and_unload_recipe(ctx, prepped):
     del ctx.session.recipes["r003"]
     r = dispatch(ctx, "load_recipe", {"recipe": "brussels"})
     assert r.ok and "r003" in ctx.session.recipes
     dispatch(ctx, "add_task", {"label": "sprouts", "recipe_id": "r003", "step_ids": ["r003-s2"]})
+    prepped(ctx, "sprouts")
     dispatch(ctx, "start_task", {"task_id": "sprouts"})
     assert not dispatch(ctx, "unload_recipe", {"recipe_id": "r003"}).ok
     dispatch(ctx, "mark_complete", {"task_id": "sprouts"})

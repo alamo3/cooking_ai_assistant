@@ -737,6 +737,33 @@ yet running; `needed` — dashed outline, a loaded recipe wants it and nothing i
 than counting down to a time it cannot know. The same board goes into the model's context, so
 it knows the hob is full before promising anything.
 
+## Never send the cook to a pan unprepared
+
+`start_task` refuses a task whose prep is still outstanding, and says how to get past it:
+
+```
+sear is not ready to start: Pat the chicken thighs dry and season all over with
+salt and pepper. Walk the cook through that first and call mark_complete for it,
+or skip_step if they are not doing it.
+```
+
+A gate rather than a warning, for the same reason as the hob cap: the model reads the
+rejection inside the same turn and fixes it, and the state ends up honest either way — if the
+pan really is on, the seasoning really was done, and `completed_steps` should say so.
+
+Looking ahead is the other half. A **NOT READY YET** block lists every pending task with
+outstanding prep and when it is due, so the assistant can get the cook through the chopping
+while the previous thing cooks rather than discovering it at the moment of truth.
+
+Two strictnesses, because the cost of being wrong differs:
+
+- **`is_prep_step`** — the verb must *open* the instruction. Used for gating, where a false
+  positive stops a task starting at all. Matching prep verbs anywhere used to classify "Flip
+  the thighs. Tuck the garlic, thyme and lemon halves around them" as prep, on the word
+  *halves*, which blocked the searing task forever.
+- **`looks_like_prep`** — any prep verb, anywhere off the heat. Used for mise en place, where
+  a false positive just means suggesting the garlic gets smashed early. Cheap.
+
 ## Checking the pantry before a pan comes out
 
 Finding out the coconut milk is gone forty minutes in, with three pans going, is the worst
