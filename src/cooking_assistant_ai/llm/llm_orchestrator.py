@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
@@ -22,6 +23,7 @@ from cooking_assistant_ai.core.fmt import fmt_time
 from cooking_assistant_ai.core.render import state_dict
 from cooking_assistant_ai.core.scheduler import next_action, resolve
 from cooking_assistant_ai.core.tools import ToolContext, adispatch, dispatch, tool_schemas
+from cooking_assistant_ai.storage.journal import Journal
 from cooking_assistant_ai.llm.client import LLM, ToolCallRequest, extract_text_tool_calls, strip_control_markup
 from cooking_assistant_ai.model.events import Event, IdleTick, SystemPrompt, TimerFired, UserUtterance
 from cooking_assistant_ai.model.types import Session, Timer, Turn
@@ -202,6 +204,9 @@ class Orchestrator:
         self.output = output
         self.clock = clock or Clock()
         self.ctx = ToolContext(session, self.clock, store, llm=llm)
+        # Written as the cook happens so it survives a crash and outlives the 40-turn
+        # snapshot window. Never raises; a failed log must not end a meal.
+        self.journal = Journal(session.id, started_at=session.started_at)
         self.queue: "asyncio.Queue[Any]" = asyncio.Queue()
         self.tools = tool_schemas()
         self.idle_interval_s = idle_interval_s
@@ -386,11 +391,19 @@ class Orchestrator:
             raise
         except Exception as e:  # keep the loop alive no matter what the model does
             log.exception("turn failed")
-            await self.output(Notice(f"turn failed: {e}", level="error"))
+            await self._notice(f"turn failed: {e}", "error")
+
+    async def _notice(self, text: str, level: str = "info") -> None:
+        """Notices are the drift warnings and withheld claims: exactly what a post-mortem
+        wants, so they go to the journal as well as the tablet."""
+        self.journal.notice(text, level)
+        await self.output(Notice(text, level=level))
 
     async def handle_turn(self, prompt: str, proactive: bool = False) -> str:
         session = self.session
         now = self.clock.now()
+        self.journal.heard(prompt, proactive=proactive)
+        started = time.monotonic()
         gate = SpeechGate(session, self.output, stream=not proactive)
         for attempt in range(self.empty_retries + 1):
             gate = await self._generate(prompt, proactive, now)
@@ -401,12 +414,14 @@ class Orchestrator:
             if proactive or gate.produced or gate.dispatched:
                 break
             if attempt < self.empty_retries:
-                await self.output(Notice("model returned nothing; retrying the turn", level="warning"))
+                await self._notice("model returned nothing; retrying the turn", "warning")
 
         full = gate.spoken_text()
         if proactive:
             if not full or full.upper().rstrip(".!") == "NOTHING" or full.upper().startswith("NOTHING"):
-                await self.output(Notice("idle turn suppressed", level="debug"))
+                await self._notice("idle turn suppressed", "debug")
+                self.journal.note("turn", seconds=round(time.monotonic() - started, 1),
+                                  tools=gate.dispatched, suppressed=True)
                 return ""
             await self.output(SpeechStart(proactive=True))
             await self.output(Speech(full, proactive=True))
@@ -419,6 +434,9 @@ class Orchestrator:
             session.transcript.append(Turn(role="assistant", text=full, at=self.clock.now()))
         session.last_turn_at = self.clock.now()
         self.turns_completed += 1
+        self.journal.said(full)
+        self.journal.note("turn", seconds=round(time.monotonic() - started, 1),
+                          tools=gate.dispatched, spoken_chars=len(full))
         return full
 
     async def _generate(self, prompt: str, proactive: bool, now: datetime) -> "SpeechGate":
@@ -460,6 +478,8 @@ class Orchestrator:
                 for c in calls:
                     result = await adispatch(self.ctx, c.name, c.args)
                     env = result.envelope()
+                    self.journal.tool(c.name, c.args, result.ok,
+                                      result.message or result.reason or "")
                     gate.dispatched += 1
                     if result.ok:
                         gate.tools_ok.add(c.name)
@@ -478,7 +498,7 @@ class Orchestrator:
                 missed = missed_state_change(prompt, gate.tools_ok)
                 if missed is not None:
                     omissions_left -= 1
-                    await self.output(Notice("state may have drifted: " + missed.describe(), level="warning"))
+                    await self._notice("state may have drifted: " + missed.describe(), "warning")
                     messages.append({"role": "assistant", "content": text})
                     messages.append({"role": "user", "content": omission_prompt(missed)})
                     continue
@@ -488,13 +508,13 @@ class Orchestrator:
             if gate.held and corrections_left > 0 and _round < self.max_tool_rounds:
                 corrections_left -= 1
                 claims = gate.drop_held()
-                await self.output(Notice("unbacked claim, asking the model to correct: " + "; ".join(c.describe() for c in claims), level="warning"))
+                await self._notice("unbacked claim, asking the model to correct: " + "; ".join(c.describe() for c in claims), "warning")
                 messages.append({"role": "assistant", "content": text})
                 messages.append({"role": "user", "content": correction_prompt(claims)})
                 continue
             if gate.held:
                 claims = gate.drop_held()
-                await self.output(Notice("dropped unbacked claim: " + "; ".join(c.describe() for c in claims), level="warning"))
+                await self._notice("dropped unbacked claim: " + "; ".join(c.describe() for c in claims), "warning")
             break
         return gate
 

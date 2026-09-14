@@ -754,6 +754,32 @@ fallbacks if `kitchen.local` does not resolve on your tablet:
 The advertiser is started on a worker thread: python-zeroconf refuses to be constructed
 inside a running event loop and raises with an empty message when you try.
 
+## Reading a cook back
+
+Every session writes an append-only JSONL log to `logs/` (`COOK_LOG_DIR` moves it): every
+prompt, every reply, every tool call with its arguments and whether it was accepted, every
+rejection reason, every drift warning, and how long each turn took. Written as it happens, so
+it survives a crash and outlives the forty-turn snapshot window.
+
+```bash
+uv run cooking-assistant-ai log --list       # every cook, with turn and rejection counts
+uv run cooking-assistant-ai log              # the latest, as a readable conversation
+uv run cooking-assistant-ai log --summary    # counts, tool histogram, every rejection
+uv run cooking-assistant-ai log 23722ff4     # one session
+```
+
+```
+00:02:25  COOK: Let's cook the roast chicken and the rice together. Set it up.
+00:02:29    ok  load_recipe({"recipe": "r001"})  -> loaded Roast Chicken Thighs
+00:02:32    ok  add_task({"label": "sear chicken", "appliance": "stovetop", ...})
+00:02:32       -> added sear chicken (t_002): 6:15 PM to 6:20 PM on stovetop:1
+00:02:33  SAID: Preheat your oven to 425°F.
+00:02:33    (8 tool calls, 7.9s)
+```
+
+This exists because two cooks went badly and both post-mortems were guesswork. Rejections are
+the interesting part: they are where the model wanted something the kitchen would not give it.
+
 ## Speech
 
 STT defaults to the whisper.cpp checkout in `whisper.cpp/`: the app spawns

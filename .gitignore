@@ -7,3 +7,6 @@ __pycache__/
 *.egg-info/
 dist/
 
+
+# Cook logs: personal, and regenerated every session
+logs/

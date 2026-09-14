@@ -206,6 +206,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="serve TLS with a self-signed certificate; required for the microphone on a tablet")
     s.add_argument("--cert", help="certificate file (default: generated under ~/.cooking-assistant)")
     s.add_argument("--key", help="private key file")
+
+    lg = sub.add_parser("log", help="read back a cook: what was said and every tool call")
+    lg.add_argument("which", nargs="?", help="session id, or a log filename; default the latest")
+    lg.add_argument("--list", action="store_true", help="list the logs and stop")
+    lg.add_argument("--summary", action="store_true", help="counts and rejections only")
+    lg.add_argument("--no-tools", action="store_true", help="just the conversation")
+
     return p
 
 
@@ -213,6 +220,39 @@ def main(argv: Optional[List[str]] = None) -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
     args = build_parser().parse_args(argv)
+    if args.cmd == "log":
+        from cooking_assistant_ai.storage.journal import list_logs, render, summarize
+
+        logs = list_logs()
+        if not logs:
+            print("no logs yet. They are written to ./logs as you cook (COOK_LOG_DIR moves them).")
+            return
+        if args.list:
+            for path in logs:
+                info = summarize(path)
+                print(f"  {path.name}  {info['turns']} turns, {info['tool_calls']} tool calls, "
+                      f"{info['rejected']} rejected")
+            return
+        chosen = logs[0]
+        if args.which:
+            matches = [p for p in logs if args.which in p.name]
+            if not matches:
+                print(f"no log matching '{args.which}'. Try --list.")
+                return
+            chosen = matches[0]
+        if args.summary:
+            info = summarize(chosen)
+            print(chosen.name)
+            print(f"  {info['first']} -> {info['last']}")
+            print(f"  {info['turns']} turns, {info['tool_calls']} tool calls, {info['rejected']} rejected")
+            for name, n in sorted(info["by_tool"].items(), key=lambda kv: -kv[1]):
+                print(f"    {n:4} {name}")
+            for r in info["rejections"][:20]:
+                print(f"    REJECTED {r}")
+            return
+        print(render(chosen, tools=not args.no_tools))
+        return
+
     if args.cmd == "serve":
         import os
 
