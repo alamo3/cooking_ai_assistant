@@ -206,6 +206,20 @@ class Turn:
 
 
 @dataclass
+class Failure:
+    """A tool call that was rejected and never put right.
+
+    Tool calls live inside one turn and are thrown away with it, so a rejection in one turn
+    was invisible in the next: the model was not ignoring the failures on screen, it could
+    not see them. These survive until the same tool succeeds.
+    """
+    tool: str
+    reason: str
+    at: datetime
+    args: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class Session:
     id: str
     started_at: datetime
@@ -219,6 +233,7 @@ class Session:
     transcript: List[Turn] = field(default_factory=list)
     proactivity: float = 0.5
     last_turn_at: Optional[datetime] = None
+    open_failures: List[Failure] = field(default_factory=list)
     _counters: Dict[str, Iterator[int]] = field(default_factory=dict, repr=False)
 
     # -- ids ----------------------------------------------------------------

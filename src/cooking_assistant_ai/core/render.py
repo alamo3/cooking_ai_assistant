@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from cooking_assistant_ai.core import scheduler
 from cooking_assistant_ai.core.appliances import board as appliance_board
+from cooking_assistant_ai.core.failures import to_list as failure_list
 from cooking_assistant_ai.core.fmt import fmt_dur, fmt_ingredient, fmt_time, fmt_window
 from cooking_assistant_ai.core.plan import mentions_ingredient, substitute_text
 from cooking_assistant_ai.model.types import Overlay, Recipe, Session, Step, Task
@@ -260,6 +261,7 @@ def state_dict(session: Session, now: datetime, store=None) -> Dict[str, Any]:
     return {
         "plan": plan,
         "appliances": appliance_board(session, now, store),
+        "unresolved": failure_list(session),
         "now": now.isoformat(),
         "target_plating": session.target_plating.isoformat() if session.target_plating else None,
         "proactivity": session.proactivity,

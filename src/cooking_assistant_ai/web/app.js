@@ -389,6 +389,7 @@
     renderPlan(s.plan);
     renderPlanSummary(s.plan.summary);
     renderAppliances(s.appliances);
+    renderUnresolved(s.unresolved);
     renderRecipes(s.progress.recipes);
     if (screen === "recipes") renderChoices();
     $("#recipes-count").textContent = s.progress.recipes.length ? `(${s.progress.recipes.length})` : "";
@@ -1073,6 +1074,23 @@
     }
   }
 
+
+  // Rejections the assistant has not dealt with. Previously these scrolled past in the
+  // conversation and were gone; the cook could see them and the model could not.
+  function renderUnresolved(rows) {
+    const box = $("#unresolved");
+    if (!rows || !rows.length) { box.hidden = true; box.innerHTML = ""; return; }
+    box.innerHTML = "";
+    box.appendChild(el("div", "unresolved-head",
+                       rows.length === 1 ? "1 unresolved problem" : rows.length + " unresolved problems"));
+    for (const r of rows) {
+      const item = el("div", "unresolved-item");
+      item.appendChild(el("b", null, r.tool));
+      item.appendChild(document.createTextNode(" " + r.reason));
+      box.appendChild(item);
+    }
+    box.hidden = false;
+  }
 
   // ------------------------------------------------------------ missing ingredients
   // Shown as a banner as well as spoken: if the model fumbles the sentence, the cook still

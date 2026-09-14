@@ -10,9 +10,11 @@ from typing import Any, Dict, List
 
 from cooking_assistant_ai.core.appliances import describe_kitchen, render_board
 from cooking_assistant_ai.core.diet import describe
+from cooking_assistant_ai.core.failures import render as render_failures
 from cooking_assistant_ai.core.preflight import check as check_pantry
 from cooking_assistant_ai.core.preflight import render as render_preflight
-from cooking_assistant_ai.core.plan import render_cook_plan, render_readiness
+from cooking_assistant_ai.core.plan import (render_cook_plan, render_readiness,
+                                            render_unplanned)
 from cooking_assistant_ai.core.render import (
     render_all_changes,
     render_all_recipes,
@@ -37,7 +39,7 @@ State rules:
 - When a step has a duration and the cook starts it, set a timer with a descriptive label and an on_complete_hint saying what to do when it fires.
 - If a tool rejects a call, read the reason and fix the plan (different appliance, add an after= constraint, move a task), then tell the cook what you did.
 - Scheduling: add_task gives intent, not times. Everything starts as soon as it can; use after="<task>" for ordering. There is usually no serving deadline, so do not set must_finish_by. Only if the cook names a time ("we're eating at 7") call set_target_plating, and then must_finish_by="plating" on each dish's last cooking task. Say appliance="stovetop" and a free burner is chosen for you; only name a burner if the cook did.
-- Plan every loaded recipe into tasks so their steps interleave on the cook plan; dishes that share an appliance get their own windows automatically.
+- Plan every loaded recipe into tasks in one go, before the cook starts anything. A dish with no tasks cannot be interleaved with anything, so planning them one at a time as you reach them is what leaves three burners cold while one pan works. The NOT PLANNED YET block lists what is still missing. Chain tasks within a dish with after=; never chain one dish behind another, they are meant to run at the same time.
 - One task per stretch on an appliance (sear, roast, simmer, air fry), never one task for a whole recipe. Each step belongs to at most one task; never repeat a step_id. Prep steps (chop, season, rinse) need no task: the cook plan slots them in before the first task automatically. Resting and serving steps need no task either.
 - Only the last cooking task of a dish gets must_finish_by="plating"; chain the earlier ones with after=.
 - If add_task is rejected because it would end after plating, do not keep retrying the same call: shorten the chain, drop must_finish_by, or tell the cook plating will need to move.
@@ -45,6 +47,7 @@ State rules:
 - A rice cooker, bread maker or pressure cooker finishes when it finishes. Its window on the plan is an estimate, not a deadline: never set a timer for one, never promise a time, and say roughly how long it usually takes and that you need the cook to tell you when it clicks off. When they say it is done, call mark_complete for that task straight away so everything after it moves.
 - If a MISSING INGREDIENTS block is present, deal with it before anything else: say what is missing, suggest a substitution for each, and do not walk the cook into a step that needs something they have not got. It disappears on its own once they substitute or add the stock.
 - Never send the cook to a pan before its prep is done. The NOT READY YET block lists tasks whose chopping or seasoning is outstanding: get them through that prep while the previous thing cooks, and call mark_complete for it. start_task refuses an unready task, so this is not optional.
+- If an UNRESOLVED block is present, those tool calls were rejected and never put right. Deal with them before carrying on: either fix the call the reason describes, or tell the cook plainly that it cannot be done and why. Carrying on as though a rejected call had worked is how the plan and the kitchen stop matching.
 - Use remember for preferences or facts worth keeping (allergies, "prefers less salt", substitutions they like).
 - When the cook asks what to cook, or how to use what they have, call suggest_meals (pass meals=N if they said how many portions). Recommend a specific set of meals and say how many portions it makes.
 - When the cook wants something new, search for it: call find_recipes and then import_recipe with the url they pick. A published recipe someone has actually cooked beats one you made up, so reach for create_recipe only to write down something the cook describes to you, or when a search finds nothing usable.
@@ -64,6 +67,9 @@ def _state_blocks(session: Session, now: datetime, store=None) -> str:
     shortages = render_preflight(check_pantry(store, session))
     if shortages:
         blocks.append(shortages)
+    problems = render_failures(session)
+    if problems:
+        blocks.append(problems)
     if session.notes:
         blocks.append("SESSION NOTES\n" + "\n".join(f"- {n}" for n in session.notes))
     blocks.append(render_all_recipes(session))
@@ -72,6 +78,9 @@ def _state_blocks(session: Session, now: datetime, store=None) -> str:
         blocks.append("CHANGES MADE\n" + changes)
     blocks.append("TIMELINE\n" + render_timeline(session, now))
     blocks.append(render_cook_plan(session, now))
+    unplanned = render_unplanned(session)
+    if unplanned:
+        blocks.append(unplanned)
     readiness = render_readiness(session)
     if readiness:
         blocks.append(readiness)

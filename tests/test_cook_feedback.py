@@ -496,3 +496,114 @@ def test_the_judgement_survives_storage_and_a_restart(ctx):
     dispatch(ctx, "load_recipe", {"recipe": "r001"})
     restored = snap.from_dict(snap.to_dict(ctx.session))
     assert [s.prep for s in restored.recipes["r001"].steps][:3] == [False, True, False]
+
+
+# ------------------------------------------------ rejections that outlive their own turn
+
+def test_an_unresolved_rejection_reaches_the_next_turn(ctx):
+    """Tool calls die with their turn, so a rejection used to be invisible one turn later."""
+    from datetime import datetime
+    from cooking_assistant_ai.core.context import _state_blocks
+    from cooking_assistant_ai.core.failures import render as render_failures
+    from cooking_assistant_ai.model.types import Failure
+
+    ctx.session.open_failures.append(
+        Failure(tool="add_task", reason="no free burner for second big pot",
+                at=datetime(2026, 9, 14, 18, 0)))
+    text = render_failures(ctx.session)
+    assert "UNRESOLVED" in text and "no free burner" in text
+    assert "Do not carry on as though the call had worked" in text
+    assert "UNRESOLVED" in _state_blocks(ctx.session, ctx.clock.now(), ctx.store)
+
+
+def test_a_failure_clears_when_that_tool_succeeds(ctx, monkeypatch):
+    """A tool that later works has been dealt with, by a retry or another way round."""
+    from datetime import datetime
+    from cooking_assistant_ai.llm.llm_orchestrator import MAX_OPEN_FAILURES, Orchestrator
+    from cooking_assistant_ai.llm.client import ScriptedLLM
+    from cooking_assistant_ai.core.tools import ToolResult
+
+    async def sink(ev):
+        pass
+
+    o = Orchestrator(ctx.session, ScriptedLLM(), ctx.store, sink, clock=ctx.clock,
+                     idle_interval_s=0)
+    bad = ToolResult("add_task", {}, ok=False, state="", reason="no free burner")
+    good = ToolResult("add_task", {}, ok=True, state="", message="added")
+
+    o._record_outcome("add_task", {}, bad)
+    assert [f.tool for f in ctx.session.open_failures] == ["add_task"]
+    o._record_outcome("add_task", {}, good)
+    assert ctx.session.open_failures == []
+
+    # and the list cannot balloon
+    for n in range(MAX_OPEN_FAILURES + 3):
+        o._record_outcome(f"tool{n}", {}, ToolResult(f"tool{n}", {}, ok=False, state="", reason="no"))
+    assert len(ctx.session.open_failures) == MAX_OPEN_FAILURES
+
+
+def test_failures_survive_a_restart(ctx):
+    from datetime import datetime
+    from cooking_assistant_ai.storage import sessions as snap
+    from cooking_assistant_ai.model.types import Failure
+
+    ctx.session.open_failures.append(
+        Failure(tool="set_timer", reason="finishes when it finishes",
+                at=datetime(2026, 9, 14, 18, 0), args={"task_id": "rice"}))
+    restored = snap.from_dict(snap.to_dict(ctx.session))
+    assert [f.tool for f in restored.open_failures] == ["set_timer"]
+    assert restored.open_failures[0].args == {"task_id": "rice"}
+
+
+# ------------------------------------------------------------ plan it all, not dish by dish
+
+def test_loaded_recipes_with_no_tasks_are_surfaced(ctx):
+    from cooking_assistant_ai.core.plan import render_unplanned, unplanned_recipes
+
+    for rid in ("r001", "r002", "r003"):
+        dispatch(ctx, "load_recipe", {"recipe": rid})
+    assert len(unplanned_recipes(ctx.session)) == 3
+
+    text = render_unplanned(ctx.session)
+    assert "NOT PLANNED YET" in text and "Jasmine Rice" in text
+    assert "never chain one dish behind another" in text
+
+    # planning a dish takes it off the list
+    dispatch(ctx, "add_task", {"label": "rice boil", "recipe_id": "r002",
+                               "step_ids": ["r002-s2", "r002-s3"], "appliance": "stovetop",
+                               "duration_s": 900})
+    assert not any(r.id == "r002" for r, _ in unplanned_recipes(ctx.session))
+
+
+def test_a_fully_planned_kitchen_says_nothing(ctx):
+    from cooking_assistant_ai.core.plan import render_unplanned
+    from cooking_assistant_ai.core.tools import ToolContext
+    from cooking_assistant_ai.model.types import Session
+
+    one = ToolContext(Session(id="one", started_at=ctx.clock.now()), ctx.clock, ctx.store)
+    dispatch(one, "load_recipe", {"recipe": "r003"})
+    assert render_unplanned(one.session) != ""
+
+    steps = [s.id for s in ctx.store.get_recipe("r003").steps if s.appliance]
+    dispatch(one, "add_task", {"label": "air fry", "recipe_id": "r003", "step_ids": steps,
+                               "appliance": "air_fryer", "duration_s": 720})
+    assert render_unplanned(one.session) == ""
+
+
+def test_one_stray_step_does_not_nag(ctx):
+    """A dish with nothing planned is the failure; a leftover preheat is not."""
+    from cooking_assistant_ai.core.plan import render_unplanned, unplanned_recipes
+    from cooking_assistant_ai.core.tools import ToolContext
+    from cooking_assistant_ai.model.types import Session
+
+    one = ToolContext(Session(id="one", started_at=ctx.clock.now()), ctx.clock, ctx.store)
+    dispatch(one, "load_recipe", {"recipe": "r001"})
+    assert unplanned_recipes(one.session), "nothing planned at all: say so"
+
+    # cover the roast but not the preheat
+    dispatch(one, "add_task", {"label": "sear", "recipe_id": "r001", "step_ids": ["r001-s3"],
+                               "appliance": "stovetop", "duration_s": 300})
+    dispatch(one, "add_task", {"label": "roast", "recipe_id": "r001", "step_ids": ["r001-s5"],
+                               "appliance": "oven", "temp_f": 425, "duration_s": 1500,
+                               "after": "sear"})
+    assert render_unplanned(one.session) == "", "a leftover preheat must not nag every turn"

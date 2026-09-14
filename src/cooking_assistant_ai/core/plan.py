@@ -229,6 +229,44 @@ def render_readiness(session: Session) -> str:
     return "\n".join(lines)
 
 
+def unplanned_recipes(session: Session) -> List[Tuple[Recipe, List[Step]]]:
+    """Loaded recipes with cooking steps no task covers.
+
+    The hob sat idle for an hour and 46 minutes of a real cook because tasks were created a
+    dish at a time, as the cook reached each one. Nothing can interleave what has not been
+    planned, so an unplanned recipe is a scheduling problem, not a preference.
+    """
+    covered = {sid for t in session.tasks.values() for sid in t.step_ids}
+    out = []
+    for recipe in session.recipes.values():
+        overlay = session.overlays[recipe.id]
+        live = [st for st in recipe.steps
+                if st.appliance and st.id not in session.completed_steps
+                and st.id not in overlay.skipped_steps]
+        missing = [st for st in live if st.id not in covered]
+        # Only a dish with *nothing* planned. A single stray step left over (a preheat the
+        # model folded into another task, say) is not the failure being looked for, and a
+        # block that nags about it every turn is one that gets read past.
+        if live and len(missing) == len(live):
+            out.append((recipe, missing))
+    return out
+
+
+def render_unplanned(session: Session) -> str:
+    rows = unplanned_recipes(session)
+    if not rows:
+        return ""
+    lines = ["NOT PLANNED YET"]
+    for recipe, steps in rows:
+        appliances = sorted({(st.appliance or "").split(":", 1)[0] for st in steps})
+        lines.append(f"  {recipe.title}: {len(steps)} cooking step(s) with no task "
+                     f"({', '.join(a for a in appliances if a)})")
+    lines.append("Plan these now, in one go, so the dishes interleave. Adding tasks a dish at "
+                 "a time as you reach them leaves the hob and oven idle for long stretches. "
+                 "Chain tasks within a dish with after=; never chain one dish behind another.")
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------- prep groups
 
 @dataclass

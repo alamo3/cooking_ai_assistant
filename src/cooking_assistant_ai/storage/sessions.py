@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from cooking_assistant_ai.model.types import (
+    Failure,
     Overlay,
     Recipe,
     Session,
@@ -132,6 +133,8 @@ def to_dict(session: Session) -> Dict[str, Any]:
                        for t in session.transcript[-40:]],
         "proactivity": session.proactivity,
         "last_turn_at": _dt(session.last_turn_at),
+        "open_failures": [{"tool": f.tool, "reason": f.reason, "at": _dt(f.at), "args": f.args}
+                          for f in session.open_failures],
     }
 
 
@@ -171,6 +174,9 @@ def from_dict(d: Dict[str, Any]) -> Session:
                           for t in d.get("transcript", [])]
     session.proactivity = d.get("proactivity", 0.5)
     session.last_turn_at = _parse_dt(d.get("last_turn_at"))
+    session.open_failures = [Failure(tool=f["tool"], reason=f["reason"], at=_parse_dt(f["at"]),
+                                     args=f.get("args") or {})
+                             for f in d.get("open_failures", []) if f.get("at")]
     _rebuild_counters(session)
     return session
 

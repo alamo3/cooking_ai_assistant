@@ -737,6 +737,41 @@ yet running; `needed` — dashed outline, a loaded recipe wants it and nothing i
 than counting down to a time it cannot know. The same board goes into the model's context, so
 it knows the hob is full before promising anything.
 
+## Rejections that outlive their turn
+
+A tool call and its result exist only inside the turn that made them. The next turn gets a
+freshly rebuilt state and the last five exchanges, and nothing else — so a rejected call was
+genuinely invisible one turn later. The cook watched the assistant carry on as though a
+failed call had worked, and it was not ignoring the failure, it could not see it.
+
+`Session.open_failures` is the one deliberate exception to everything here being derived,
+because a rejection is an event rather than a fact about the world. An **UNRESOLVED** block
+carries it into every following turn, and the tablet shows it beside the appliances:
+
+```
+UNRESOLVED (these tool calls were rejected and never put right)
+  add_task at 6:04 PM: no free burner for second big pot (6:00-6:20)
+Fix each one or tell the cook it cannot be done and why.
+```
+
+A failure clears the moment the same tool succeeds — by a retry, or by the model doing the
+thing another way — so a rejection recovered from inside its own turn never surfaces at all.
+The list is capped at five, because more than a handful is not something to read out.
+
+## Planning the whole meal, not a dish at a time
+
+The hob sat idle for an hour and 46 minutes of a real cook, because tasks were created a dish
+at a time as the cook reached each one, and nothing can interleave what has not been planned.
+A **NOT PLANNED YET** block names every loaded recipe with no tasks at all.
+
+It flags only dishes with *nothing* planned, not stray steps. A leftover preheat the model
+folded into another task is not the failure being looked for, and a block that nags about it
+every turn is one that gets read past.
+
+Measured on the same three-dish meal after the change: all three planned in a single turn,
+starting together on two burners and the oven, with **64% of the span running two or more
+things at once**.
+
 ## Never send the cook to a pan unprepared
 
 `start_task` refuses a task whose prep is still outstanding, and says how to get past it:

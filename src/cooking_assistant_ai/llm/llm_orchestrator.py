@@ -26,11 +26,15 @@ from cooking_assistant_ai.core.tools import ToolContext, adispatch, dispatch, to
 from cooking_assistant_ai.storage.journal import Journal
 from cooking_assistant_ai.llm.client import LLM, ToolCallRequest, extract_text_tool_calls, strip_control_markup
 from cooking_assistant_ai.model.events import Event, IdleTick, SystemPrompt, TimerFired, UserUtterance
-from cooking_assistant_ai.model.types import Session, Timer, Turn
+from cooking_assistant_ai.model.types import Failure, Session, Timer, Turn
 from cooking_assistant_ai.speech.sentences import SentenceSplitter
 from cooking_assistant_ai.storage.db import Store
 
 log = logging.getLogger(__name__)
+
+# More than a handful of unresolved rejections is not a list to read out, it is a sign
+# something is badly wrong; keeping the newest few stops the block swamping the state.
+MAX_OPEN_FAILURES = 5
 
 
 # --------------------------------------------------------------------------- output events
@@ -393,6 +397,23 @@ class Orchestrator:
             log.exception("turn failed")
             await self._notice(f"turn failed: {e}", "error")
 
+    def _record_outcome(self, name: str, args: Dict[str, Any], result) -> None:
+        """Remember a rejection past the end of the turn; forget it when it is put right.
+
+        A tool that later succeeds has been dealt with, whether by a retry or by the model
+        doing the thing a different way, so its failures go. Anything left is genuinely
+        unresolved and belongs in the state the next turn reads.
+        """
+        failures = self.session.open_failures
+        if result.ok:
+            failures[:] = [f for f in failures if f.tool != name]
+            return
+        failures[:] = [f for f in failures if f.tool != name]
+        failures.append(Failure(tool=name, reason=result.reason or "rejected",
+                                at=self.clock.now(), args=dict(args or {})))
+        if len(failures) > MAX_OPEN_FAILURES:
+            del failures[:-MAX_OPEN_FAILURES]   # the oldest stop being the live problem
+
     async def _notice(self, text: str, level: str = "info") -> None:
         """Notices are the drift warnings and withheld claims: exactly what a post-mortem
         wants, so they go to the journal as well as the tablet."""
@@ -480,6 +501,7 @@ class Orchestrator:
                     env = result.envelope()
                     self.journal.tool(c.name, c.args, result.ok,
                                       result.message or result.reason or "")
+                    self._record_outcome(c.name, c.args, result)
                     gate.dispatched += 1
                     if result.ok:
                         gate.tools_ok.add(c.name)
