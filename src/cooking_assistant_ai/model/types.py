@@ -167,6 +167,9 @@ class Task:
     # window is still computed so the meal can be planned around it, but it is an estimate,
     # never a deadline, and the task stays active past its end until someone says otherwise.
     awaits_cook: bool = False
+    # How big a pan this needs: a stockpot will not sit on the small ring, and two big pans
+    # side by side do not physically fit on most hobs.
+    pan: Optional[str] = None  # "large" | "medium" | "small" | None (unknown, treat as medium)
 
     @property
     def is_open(self) -> bool:

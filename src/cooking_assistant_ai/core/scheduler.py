@@ -69,7 +69,50 @@ def is_generic_stovetop(appliance: Optional[str]) -> bool:
     return appliance == "stovetop"
 
 
-def assign_burners(session: Session, burners: Optional[int] = None) -> None:
+_SIZES = ("small", "medium", "large")
+
+
+def _size_rank(sizes: Optional[List[str]], n: int) -> int:
+    if not sizes or not (1 <= n <= len(sizes)):
+        return 1
+    return _SIZES.index(sizes[n - 1]) if sizes[n - 1] in _SIZES else 1
+
+
+def _fits(pan: Optional[str], sizes: Optional[List[str]], n: int) -> bool:
+    """Unknown ring sizes must not invent a constraint: without them every pan fits."""
+    if not sizes:
+        return True
+    want = _SIZES.index(pan) if pan in _SIZES else 1
+    return want <= _size_rank(sizes, n)
+
+
+def hob_overload(session: Session, cap: Optional[int] = None) -> List[str]:
+    """More pans on the go at once than the hob physically takes.
+
+    Four rings is not four pans: two large pans already fill most hobs, so the cook sets a
+    realistic cap. Reported as a violation so add_task rejects the call and the model has to
+    chain it with after= instead of planning something that cannot happen.
+    """
+    if not cap:
+        return []
+    open_hob = [t for t in session.tasks.values()
+                if t.is_open and t.appliance and _appliance_family(t.appliance) == "stovetop"
+                and t.start_at and t.end_at]
+    out: List[str] = []
+    for probe in open_hob:
+        at = probe.start_at
+        together = [t for t in open_hob
+                    if t.start_at is not None and t.end_at is not None
+                    and t.start_at <= at < t.end_at]
+        if len(together) > cap:
+            names = ", ".join(sorted(t.label for t in together))
+            out.append(f"{len(together)} pans on the hob at {fmt_time(at)} ({names}) but only "
+                       f"{cap} fit at once; chain one with after= or move it")
+    return sorted(set(out))
+
+
+def assign_burners(session: Session, burners: Optional[int] = None,
+                   sizes: Optional[List[str]] = None, cap: Optional[int] = None) -> None:
     """Give every auto-stovetop task a concrete free burner for its window.
 
     Tasks that named a burner, and auto tasks already active (the pan is physically on
@@ -93,7 +136,13 @@ def assign_burners(session: Session, burners: Optional[int] = None) -> None:
     auto.sort(key=lambda t: (t.start_at or datetime.max, t.id))
     for t in auto:
         chosen: Optional[int] = None
-        for n in range(1, burners + 1):
+        # Biggest pans first onto the rings that take them, then smaller ones fill in;
+        # within that, the lowest free ring, so assignments stay stable between resolves.
+        order = sorted(range(1, burners + 1),
+                       key=lambda n: (not _fits(t.pan, sizes, n), _size_rank(sizes, n), n))
+        for n in order:
+            if not _fits(t.pan, sizes, n):
+                continue
             if all(not (m == n and _overlaps(t, other)) for m, other in fixed):
                 chosen = n
                 break
@@ -171,7 +220,8 @@ def _feeds_alap(t: Task, order: List[Task], alap: Dict[str, datetime]) -> bool:
     return any(t.id in d.depends_on and d.status == "pending" and d.id in alap for d in order)
 
 
-def resolve(session: Session, now: datetime) -> None:
+def resolve(session: Session, now: datetime, burners: Optional[int] = None,
+            sizes: Optional[List[str]] = None) -> None:
     """Recompute start_at/end_at for every task from intent. Mutates tasks in place."""
     order = topo_order(session.tasks)
     alap: Dict[str, datetime] = {}
@@ -236,7 +286,7 @@ def resolve(session: Session, now: datetime) -> None:
                 changed = True
         if not changed:
             break
-    assign_burners(session)
+    assign_burners(session, burners, sizes)
 
 
 def _overlaps(a: Task, b: Task) -> bool:
@@ -313,9 +363,10 @@ def drift_warnings(session: Session, now: datetime) -> List[str]:
     return out
 
 
-def all_violations(session: Session) -> List[str]:
+def all_violations(session: Session, hob_cap: Optional[int] = None) -> List[str]:
     reasons = [r for _, _, r in appliance_conflicts(session)]
     reasons += burner_shortages(session)
+    reasons += hob_overload(session, hob_cap)
     reasons += [r for _, r in deadline_misses(session)]
     return reasons
 

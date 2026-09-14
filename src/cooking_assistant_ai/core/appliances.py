@@ -36,6 +36,45 @@ CATALOGUE = ("oven", "stovetop", "microwave", "air_fryer", "rice_cooker",
 DEFAULT_OWNED = ("oven", "stovetop", "microwave")
 DEFAULT_BURNERS = 4
 
+PAN_SIZES = ("small", "medium", "large")
+_SIZE_ORDER = {name: n for n, name in enumerate(PAN_SIZES)}
+
+
+def burner_sizes(store) -> List[str]:
+    """Physical size of each ring, front-left first, or [] if the cook has not said.
+
+    Empty means unknown, and unknown must stay permissive: defaulting the rings to "medium"
+    would make an unconfigured hob refuse every large pan, which is inventing a constraint
+    out of missing information.
+    """
+    raw = store.get_setting("burner_sizes", "") if store is not None else ""
+    sizes = [x.strip().lower() for x in raw.split(",") if x.strip() in PAN_SIZES]
+    if not sizes:
+        return []
+    n = burner_count(store)
+    return sizes[:n] + [sizes[-1]] * max(0, n - len(sizes))
+
+
+def burner_cap(store) -> int:
+    """How many rings can realistically be in use at once.
+
+    Four rings does not mean four pans: on most hobs two large pans already fill it. Without
+    this the scheduler cheerfully plans four simultaneous tasks that cannot physically happen.
+    """
+    n = burner_count(store)
+    if store is None:
+        return n
+    try:
+        cap = int(store.get_setting("burner_cap", "") or n)
+    except ValueError:
+        return n
+    return max(1, min(n, cap))
+
+
+def fits(pan: Optional[str], burner: str) -> bool:
+    """A large pan needs a large ring; a small one sits happily anywhere."""
+    return _SIZE_ORDER.get(pan or "medium", 1) <= _SIZE_ORDER.get(burner, 1)
+
 
 def owned(store) -> List[str]:
     """The appliances this kitchen actually has, in catalogue order."""
@@ -64,16 +103,26 @@ def describe_kitchen(store) -> str:
     bits = []
     for a in have:
         if a == "stovetop":
-            bits.append(f"a hob with {burner_count(store)} burners")
+            sizes = burner_sizes(store)
+            cap = burner_cap(store)
+            detail = (", ".join(f"burner {n} {sz}" for n, sz in enumerate(sizes, start=1))
+                      if sizes else f"{burner_count(store)} burners")
+            limit = (f" but only {cap} pans fit on it at once, so never plan more than {cap} "
+                     f"overlapping hob tasks" if cap < burner_count(store) else "")
+            bits.append(f"a hob ({detail}){limit}")
         else:
             bits.append(LABELS.get(a, a).lower())
     return ("KITCHEN: this kitchen has " + ", ".join(bits) +
             ". Do not plan a task on anything else; adapt the recipe to what is here.")
 
 
-def _label(slot: str) -> str:
+def _label(slot: str, sizes: Optional[List[str]] = None) -> str:
     if slot.startswith("stovetop:"):
-        return f"Burner {slot.split(':', 1)[1]}"
+        n = slot.split(":", 1)[1]
+        size = ""
+        if sizes and n.isdigit() and 1 <= int(n) <= len(sizes):
+            size = f" ({sizes[int(n) - 1]})"
+        return f"Burner {n}{size}"
     return LABELS.get(slot, slot.replace("_", " ").capitalize())
 
 
@@ -190,7 +239,7 @@ def board(session: Session, now: datetime, store=None) -> List[Dict[str, Any]]:
 
         out.append({
             "slot": slot,
-            "label": _label(slot),
+            "label": _label(slot, burner_sizes(store)),
             "family": slot.split(":", 1)[0],
             "status": status,
             "temp_f": temp,

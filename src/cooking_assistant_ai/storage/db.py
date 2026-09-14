@@ -92,6 +92,17 @@ class Store:
             self.set_setting("burners", str(max(1, min(8, int(burners)))))
         return self.appliances
 
+    def set_hob(self, sizes: Optional[List[str]] = None, cap: Optional[int] = None) -> None:
+        from cooking_assistant_ai.core.appliances import PAN_SIZES
+
+        if sizes is not None:
+            bad = [x for x in sizes if x not in PAN_SIZES]
+            if bad:
+                raise ValueError(f"burner size must be one of {', '.join(PAN_SIZES)}, got {bad}")
+            self.set_setting("burner_sizes", ",".join(sizes))
+        if cap is not None:
+            self.set_setting("burner_cap", str(max(1, min(8, int(cap)))))
+
     def set_diet(self, diet: str) -> str:
         from cooking_assistant_ai.core.diet import DIETS
 

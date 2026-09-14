@@ -276,6 +276,8 @@ class RecipeRef(BaseModel):
 class KitchenChoice(BaseModel):
     appliances: List[str]
     burners: Optional[int] = None
+    burner_sizes: Optional[List[str]] = None
+    burner_cap: Optional[int] = None
 
 
 class DietChoice(BaseModel):
@@ -646,13 +648,17 @@ def create_app(settings: Optional[Settings] = None, llm: Optional[LLM] = None,
 
     @app.get("/kitchen")
     async def get_kitchen() -> Dict[str, Any]:
-        from cooking_assistant_ai.core.appliances import (CATALOGUE, LABELS, burner_count,
-                                                          owned)
+        from cooking_assistant_ai.core.appliances import (CATALOGUE, LABELS, PAN_SIZES,
+                                                          burner_cap, burner_count,
+                                                          burner_sizes, owned)
 
         have = owned(store)
         return {
             "appliances": have,
             "burners": burner_count(store),
+            "burner_sizes": burner_sizes(store),
+            "burner_cap": burner_cap(store),
+            "pan_sizes": list(PAN_SIZES),
             "options": [{"id": a, "label": LABELS.get(a, a), "owned": a in have}
                         for a in CATALOGUE],
         }
@@ -661,6 +667,7 @@ def create_app(settings: Optional[Settings] = None, llm: Optional[LLM] = None,
     async def put_kitchen(body: KitchenChoice) -> Dict[str, Any]:
         try:
             store.set_appliances(body.appliances, body.burners)
+            store.set_hob(body.burner_sizes, body.burner_cap)
         except (ValueError, TypeError) as e:
             raise HTTPException(422, str(e))
         # Push the new board to every tablet: the kitchen just changed shape.

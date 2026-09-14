@@ -1079,6 +1079,8 @@
   async function loadKitchen() {
     try { kitchen = await api("GET", "/kitchen"); } catch (e) { return; }
     $("#burner-count").value = kitchen.burners;
+    $("#burner-cap").value = kitchen.burner_cap;
+    renderBurnerSizes();
     const box = $("#appliance-picker");
     box.innerHTML = "";
     for (const opt of kitchen.options) {
@@ -1091,6 +1093,33 @@
     }
   }
 
+  // How big each ring is, and how many pans genuinely fit. Four rings is not four pans.
+  function renderBurnerSizes() {
+    const box = $("#burner-sizes");
+    box.innerHTML = "";
+    if (!kitchen || !kitchen.appliances.includes("stovetop")) return;
+    for (let i = 0; i < kitchen.burners; i++) {
+      const row = el("label", "burner-size");
+      row.appendChild(el("span", null, "Burner " + (i + 1)));
+      const sel = el("select");
+      for (const size of kitchen.pan_sizes) {
+        const o = el("option", null, size);
+        o.value = size;
+        if ((kitchen.burner_sizes[i] || "large") === size) o.selected = true;
+        sel.appendChild(o);
+      }
+      sel.onchange = () => {
+        for (let j = 0; j < kitchen.burners; j++) {
+          if (!kitchen.burner_sizes[j]) kitchen.burner_sizes[j] = "large";
+        }
+        kitchen.burner_sizes[i] = sel.value;
+        saveKitchen(null);
+      };
+      row.appendChild(sel);
+      box.appendChild(row);
+    }
+  }
+
   async function saveKitchen(toggleId) {
     if (!kitchen) return;
     let chosen = kitchen.options.filter((o) => o.owned).map((o) => o.id);
@@ -1100,7 +1129,11 @@
     }
     const burners = Math.max(1, Math.min(8, parseInt($("#burner-count").value, 10) || 4));
     try {
-      kitchen = await api("PUT", "/kitchen", { appliances: chosen, burners });
+      const cap = Math.max(1, Math.min(8, parseInt($("#burner-cap").value, 10) || burners));
+      kitchen = await api("PUT", "/kitchen", {
+        appliances: chosen, burners, burner_cap: cap,
+        burner_sizes: (kitchen.burner_sizes || []).slice(0, burners),
+      });
       await loadKitchen();
       toast("Kitchen updated");
     } catch (e) { toast(e.message, true); }
@@ -1190,6 +1223,7 @@
   // ------------------------------------------------------------ boot
   bindUi();
   $("#burner-count").onchange = () => saveKitchen(null);
+  $("#burner-cap").onchange = () => saveKitchen(null);
   $("#server-chip").onclick = () => toggleServerPanel();
   $("#srv-close").onclick = () => toggleServerPanel(false);
   $("#srv-restart").onclick = restartServer;

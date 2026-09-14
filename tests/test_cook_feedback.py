@@ -281,7 +281,7 @@ def test_the_model_is_told_what_the_kitchen_has(ctx):
 
     ctx.store.set_appliances(["oven", "stovetop", "rice_cooker"], burners=2)
     text = describe_kitchen(ctx.store)
-    assert "a hob with 2 burners" in text and "rice cooker" in text
+    assert "a hob (2 burners)" in text and "rice cooker" in text
     assert "air fryer" not in text
     assert "Do not plan a task on anything else" in text
 
@@ -328,3 +328,69 @@ def test_a_recipe_wanting_the_hob_flags_one_burner_not_all(ctx):
     # and no stray bare "stovetop" slot alongside the numbered ones
     assert [r["slot"] for r in rows].count("stovetop") == 0
     assert len({r["slot"] for r in rows}) == len(rows)
+
+
+# --------------------------------------------------------- the hob is not four free rings
+
+def _hob(ctx, sizes="large,large,medium,small", cap="2", burners=4):
+    from cooking_assistant_ai.core.appliances import CATALOGUE
+
+    ctx.store.set_appliances(list(CATALOGUE), burners=burners)
+    ctx.store.set_hob(sizes.split(","), int(cap))
+
+
+def test_only_as_many_pans_as_physically_fit(ctx):
+    """Four rings is not four pans: two large ones already fill most hobs."""
+    _hob(ctx)
+    assert dispatch(ctx, "add_task", {"label": "a", "appliance": "stovetop",
+                                      "duration_s": 1200, "pan": "large"}).ok
+    assert dispatch(ctx, "add_task", {"label": "b", "appliance": "stovetop",
+                                      "duration_s": 1200, "pan": "small"}).ok
+    third = dispatch(ctx, "add_task", {"label": "c", "appliance": "stovetop",
+                                       "duration_s": 1200, "pan": "medium"})
+    assert not third.ok
+    assert "only 2 fit at once" in third.reason and "after=" in third.reason
+    # chaining it is the way through, exactly as the rejection says
+    assert dispatch(ctx, "add_task", {"label": "c", "appliance": "stovetop",
+                                      "duration_s": 1200, "pan": "medium", "after": "a"}).ok
+
+
+def test_a_big_pot_needs_a_big_ring(ctx):
+    _hob(ctx, sizes="large,small,small,small", cap="4")
+    assert dispatch(ctx, "add_task", {"label": "stockpot", "appliance": "stovetop",
+                                      "duration_s": 1200, "pan": "large"}).ok
+    second = dispatch(ctx, "add_task", {"label": "another stockpot", "appliance": "stovetop",
+                                        "duration_s": 1200, "pan": "large"})
+    assert not second.ok and "no free burner" in second.reason
+    # a small pan still fits alongside it
+    assert dispatch(ctx, "add_task", {"label": "sauce", "appliance": "stovetop",
+                                      "duration_s": 1200, "pan": "small"}).ok
+    assert ctx.session.find_task("stockpot").appliance == "stovetop:1"
+
+
+def test_unknown_ring_sizes_never_invent_a_constraint(ctx):
+    """A kitchen that has not configured its hob must not have large pans refused."""
+    from cooking_assistant_ai.core.appliances import CATALOGUE
+
+    ctx.store.set_appliances(list(CATALOGUE), burners=4)
+    assert dispatch(ctx, "add_task", {"label": "stockpot", "appliance": "stovetop",
+                                      "duration_s": 1200, "pan": "large"}).ok
+
+
+def test_the_model_is_told_the_shape_of_the_hob(ctx):
+    from cooking_assistant_ai.core.appliances import describe_kitchen
+
+    _hob(ctx)
+    text = describe_kitchen(ctx.store)
+    assert "burner 1 large" in text and "burner 4 small" in text
+    assert "only 2 pans fit on it at once" in text
+
+
+def test_pan_size_survives_a_restart(ctx):
+    from cooking_assistant_ai.storage import sessions as snap
+
+    _hob(ctx)
+    dispatch(ctx, "add_task", {"label": "a", "appliance": "stovetop",
+                               "duration_s": 1200, "pan": "large"})
+    restored = snap.from_dict(snap.to_dict(ctx.session))
+    assert next(iter(restored.tasks.values())).pan == "large"

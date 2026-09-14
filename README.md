@@ -737,6 +737,22 @@ yet running; `needed` — dashed outline, a loaded recipe wants it and nothing i
 than counting down to a time it cannot know. The same board goes into the model's context, so
 it knows the hob is full before promising anything.
 
+## The hob is not four free rings
+
+Four burners does not mean four pans: two large ones already fill most hobs, and a stockpot
+will not sit on the small ring. The Pantry screen takes a size per burner and a **pans at
+once** cap, and both are constraints rather than labels:
+
+- `add_task` takes a `pan` size. A large pan is only assigned to a ring that takes it, and a
+  second one is refused when there is only one large ring.
+- Exceeding the cap is a scheduling violation like any other, so `add_task` rejects it with
+  *"3 pans on the hob at 6:00 PM but only 2 fit at once; chain one with after= or move it"*
+  and the model has to sequence rather than plan something that cannot physically happen.
+- The model is told the shape of the hob up front, ring by ring.
+
+Unset sizes mean **unknown, not medium**. An unconfigured hob accepts every pan, because
+defaulting the rings would invent a constraint out of missing information.
+
 ## Telling it what your kitchen has
 
 The Pantry screen has a **My kitchen** picker: tap an appliance to say whether you own it,

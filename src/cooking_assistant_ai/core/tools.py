@@ -162,6 +162,15 @@ def _float(v: Any, name: str, required: bool = False) -> Optional[float]:
         raise ToolError(f"'{name}' must be a number, got {v!r}")
 
 
+def _pan_size(v: Any) -> Optional[str]:
+    text = (_str(v, "pan") or "").lower()
+    if text in ("small", "medium", "large"):
+        return text
+    if text in ("big", "stockpot", "large pot", "wok"):
+        return "large"
+    return None
+
+
 def _bool(v: Any, name: str) -> bool:
     """Models send true, "true", "yes" and 1 interchangeably."""
     if isinstance(v, bool):
@@ -229,10 +238,24 @@ def _recipe_state(ctx: ToolContext, recipe) -> str:
     return txt + ("\n" + ch if ch else "")
 
 
+def _hob_cap(ctx: ToolContext) -> Optional[int]:
+    from cooking_assistant_ai.core.appliances import burner_cap, burner_count
+
+    cap = burner_cap(ctx.store)
+    return cap if cap < burner_count(ctx.store) else None   # no cap set: nothing to enforce
+
+
+def _resolve(ctx: ToolContext) -> None:
+    """resolve() with this kitchen's hob, so assignment matches real ring sizes."""
+    from cooking_assistant_ai.core.appliances import burner_count, burner_sizes
+
+    scheduler.resolve(ctx.session, ctx.now, burner_count(ctx.store), burner_sizes(ctx.store))
+
+
 def _validate_change(ctx: ToolContext, before: List[str], subject: str) -> None:
     """Compare violations before/after a mutation; raise (caller rolls back) if new ones appeared."""
-    scheduler.resolve(ctx.session, ctx.now)
-    after = scheduler.all_violations(ctx.session)
+    _resolve(ctx)
+    after = scheduler.all_violations(ctx.session, _hob_cap(ctx))
     new = [r for r in after if r not in before]
     if new:
         raise ToolError(f"cannot {subject}: " + " | ".join(new))
@@ -328,7 +351,7 @@ def set_target_plating(ctx: ToolContext, time: Any = None, minutes_from_now: Any
                 raise ToolError(f"{fmt_time(parsed)} is in the past")
         target = parsed
     snap = _Snapshot(ctx)
-    before = scheduler.all_violations(ctx.session)
+    before = scheduler.all_violations(ctx.session, _hob_cap(ctx))
     ctx.session.target_plating = target
     try:
         _validate_change(ctx, before, f"set plating to {fmt_time(target)}")
@@ -348,6 +371,7 @@ _TASK_PARAMS = _params({
     "after": {"type": "string", "description": "task label/id that must finish before this starts"},
     "before": {"type": "string", "description": "task label/id that must start after this finishes"},
     "must_finish_by": {"type": "string", "description": "'plating' to schedule as late as possible so it ends at plating, or a task label/id"},
+    "pan": {"type": "string", "enum": ["small", "medium", "large"], "description": "how big a pan or pot this needs. A stockpot or a batch of anything is large; a small saucepan is small. Used to pick a ring that fits and to respect how many pans the hob really holds"},
     "awaits_cook": {"type": "boolean", "description": "the appliance decides when it is done and the cook will tell you (rice cooker and friends set this automatically). duration_s is then only an estimate for planning; never set a timer for it"},
 }, ["label"])
 
@@ -360,7 +384,7 @@ _TASK_PARAMS = _params({
 def add_task(ctx: ToolContext, label: Any = None, recipe_id: Any = None, step_ids: Any = None,
              appliance: Any = None, temp_f: Any = None, duration_s: Any = None,
              after: Any = None, before: Any = None, must_finish_by: Any = None,
-             awaits_cook: Any = None) -> Tuple[str, Optional[str]]:
+             awaits_cook: Any = None, pan: Any = None) -> Tuple[str, Optional[str]]:
     s = ctx.session
     label_s = _str(label, "label", required=True) or ""
     if s.find_task(label_s) is not None and any(t.label.lower() == label_s.lower() for t in s.tasks.values()):
@@ -427,20 +451,21 @@ def add_task(ctx: ToolContext, label: Any = None, recipe_id: Any = None, step_id
             mfb = _task(ctx, ref, "must_finish_by").id
 
     snap = _Snapshot(ctx)
-    before_v = scheduler.all_violations(s)
+    before_v = scheduler.all_violations(s, _hob_cap(ctx))
     task = Task(
         id=s.new_id("t"), label=label_s, recipe_id=recipe.id if recipe else "",
         step_ids=steps, appliance=appl, temp_f=temp, duration_s=dur, appliance_auto=auto,
         depends_on=deps, must_finish_by=mfb,
         # A rice cooker is untimed whether or not the model realised it.
         awaits_cook=bool(_bool(awaits_cook, "awaits_cook")) or scheduler.is_untimed(appl),
+        pan=_pan_size(pan),
     )
     s.tasks[task.id] = task
     if before_task is not None:
         before_task.depends_on.append(task.id)
     try:
         try:
-            scheduler.resolve(s, ctx.now)
+            _resolve(ctx)
         except scheduler.ScheduleError as e:
             raise ToolError(f"cannot add {label_s}: {e.reason}")
         _validate_change(ctx, before_v, f"add {label_s}")
@@ -471,7 +496,7 @@ def _remove_task_internal(ctx: ToolContext, t: Task) -> None:
 def remove_task(ctx: ToolContext, task_id: Any = None) -> Tuple[str, Optional[str]]:
     t = _task(ctx, task_id)
     _remove_task_internal(ctx, t)
-    scheduler.resolve(ctx.session, ctx.now)
+    _resolve(ctx)
     return "timeline", f"removed {t.label}"
 
 
@@ -509,7 +534,7 @@ def replan(ctx: ToolContext, reason: Any = None) -> Tuple[str, Optional[str]]:
     pending = [t for t in ctx.session.tasks.values() if t.status == "pending"]
     for t in pending:
         _remove_task_internal(ctx, t)
-    scheduler.resolve(ctx.session, ctx.now)
+    _resolve(ctx)
     why = _str(reason, "reason") or "no reason given"
     return "timeline", f"cleared {len(pending)} pending task(s) ({why}). Rebuild with add_task."
 
@@ -531,7 +556,7 @@ def start_task(ctx: ToolContext, task_id: Any = None) -> Tuple[str, Optional[str
     t.status = "active"
     t.actual_start = ctx.now
     t.start_at = ctx.now
-    scheduler.resolve(ctx.session, ctx.now)
+    _resolve(ctx)
     return "timeline", f"{t.label} started at {fmt_time(ctx.now)}, ends {fmt_time(t.end_at)}"
 
 
@@ -557,7 +582,7 @@ def move_task(ctx: ToolContext, task_id: Any = None, after: Any = None, before: 
     if not after_s and not before_s and delay is None:
         raise ToolError("give after=, before= or delay_minutes=")
     snap = _Snapshot(ctx)
-    before_v = scheduler.all_violations(s)
+    before_v = scheduler.all_violations(s, _hob_cap(ctx))
     what: List[str] = []
     try:
         if after_s:
@@ -579,7 +604,7 @@ def move_task(ctx: ToolContext, task_id: Any = None, after: Any = None, before: 
             t.not_before = base + timedelta(minutes=delay)
             what.append(f"delayed {delay}m")
         try:
-            scheduler.resolve(s, ctx.now)
+            _resolve(ctx)
         except scheduler.ScheduleError as e:
             raise ToolError(f"cannot move {t.label}: {e.reason}")
         _validate_change(ctx, before_v, f"move {t.label}")

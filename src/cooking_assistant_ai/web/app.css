@@ -444,3 +444,8 @@ button.ghost { background: transparent; color: var(--muted); }
 .appl.unowned { border-style: dashed; border-color: rgba(217,97,78,.5); }
 .appl.unowned .appl-icon { stroke: var(--bad); }
 .appl.unowned .appl-when { color: var(--bad); }
+
+.burner-sizes { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.burner-size { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 7px 11px; }
+.burner-size select { font-size: 13px; padding: 3px 6px; }
