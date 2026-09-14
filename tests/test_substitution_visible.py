@@ -98,3 +98,34 @@ def test_matching_is_conservative(ctx):
     edited = apply_substitution(recipe, "r001-i2", "ghee")
     assert edited.step("ry-s1").text == "Add ghee and ghee."
     assert edited.step("ry-s2").text == "Spread the buttermilk."
+
+
+def test_an_amount_in_the_replacement_is_not_doubled(ctx):
+    """The benchmark caught a model sending "2 tbsp olive oil" as the replacement *name*.
+
+    substitute keeps the original amount and unit and renders them around the new name, so
+    that produced "2 tbsp 2 tbsp olive oil" in the ingredient list and "Melt the 2 tbsp olive
+    oil" in the step — written permanently into the saved recipe.
+    """
+    dispatch(ctx, "load_recipe", {"recipe": "r001"})
+    assert dispatch(ctx, "substitute", {"recipe_id": "r001", "ingredient_id": "butter",
+                                        "replacement": "2 tbsp olive oil"}).ok
+
+    stored = ctx.store.get_recipe("r001")
+    assert stored.ingredient("r001-i2").name == "olive oil"
+    rendered = render_all_recipes(ctx.session)
+    assert "2 tbsp olive oil" in rendered and "2 tbsp 2 tbsp" not in rendered
+    assert "the 2 tbsp olive oil" not in stored.step("r001-s3").text
+
+
+def test_amount_stripping_is_conservative(ctx):
+    from cooking_assistant_ai.core.tools import _ingredient_name
+
+    assert _ingredient_name("1 1/2 cups jasmine rice") == "jasmine rice"
+    assert _ingredient_name("200g butter") == "butter"
+    assert _ingredient_name("1/2 cup cream") == "cream"
+    # names that merely contain words or hyphens keep every part of themselves
+    assert _ingredient_name("olive oil") == "olive oil"
+    assert _ingredient_name("five-spice powder") == "five-spice powder"
+    assert _ingredient_name("half-fat creme fraiche") == "half-fat creme fraiche"
+    assert _ingredient_name("2 tbsp") == "2 tbsp"      # nothing left over: keep the input

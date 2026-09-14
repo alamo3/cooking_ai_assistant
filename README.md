@@ -459,6 +459,34 @@ The assistant shares one GPU with the Windows desktop, so it is tuned not to fil
 Measure what is actually resident with `ollama ps`, and per process with
 `Get-Counter "\GPU Process Memory(*)\Local Usage"`.
 
+## Reasoning effort: measured, not assumed
+
+Both benchmarks against DeepSeek v4.1 Flash at every effort level:
+
+| reasoning | messy | planning | plan median | messy total |
+|---|---|---|---|---|
+| **off** | **8/8** | 3/3 | **8s** | **~14s** |
+| low | 7/8 | 3/3 | 40s | 98s |
+| medium | 8/8 | 3/3 | 24s | 147s |
+| high | 8/8 | 3/3 | 26s | 111s |
+
+Planning quality is identical at every level, so reasoning buys nothing there. Recovery is
+equal once the two bugs the sweep exposed were fixed, and `off` is roughly ten times faster —
+sub-second on most scenarios against up to 44 s at medium. In a kitchen that gap *is* the
+product, so **off is the default** and only Gemini, whose endpoint refuses to disable
+reasoning, gets `low`.
+
+The first run scored 6/8 at off and 7/8 at medium. Both differences turned out to be worth
+chasing rather than accepting:
+
+- **A real bug.** `out_of_butter` failed at off/low because the model sent `"2 tbsp olive
+  oil"` as the replacement *name*. `substitute` keeps the original amount and renders it
+  around the new name, so that became "2 tbsp 2 tbsp olive oil" — and since substitutions are
+  permanent, it wrote "Melt the 2 tbsp olive oil" into the saved recipe. `_ingredient_name`
+  now strips a leading quantity, refusing when only a unit would remain.
+- **A brittle check.** `dropped_garlic` grepped for the literal word "garlic", so it failed
+  "two smashed cloves will still flavor the chicken fine", which is a perfectly good answer.
+
 ## The two benchmarks
 
 `evals/plan_bench.py <model> <trials>` scores building a plan. `evals/messy_bench.py <model>`

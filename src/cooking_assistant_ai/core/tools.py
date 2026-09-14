@@ -765,6 +765,34 @@ def _ingredient(recipe, ref: str):
     raise ToolError(f"no ingredient '{ref}' in {recipe.title}. Ingredients: {names}")
 
 
+_AMOUNT_PREFIX = re.compile(
+    r"^\s*\d+(?:\.\d+)?(?:\s*/\s*\d+)?(?:\s+\d+\s*/\s*\d+)?\s*"
+    r"(?:tbsp|tablespoons?|tsp|teaspoons?|cups?|g|grams?|kg|ml|l|litres?|liters?|"
+    r"oz|ounces?|lb|pounds?|cloves?|sprigs?|pinch(?:es)?|cans?|tins?|sticks?)?\s+(?=\S)",
+    re.I)
+
+
+_UNIT_ONLY = re.compile(
+    r"(?:tbsp|tablespoons?|tsp|teaspoons?|cups?|g|grams?|kg|ml|l|litres?|liters?|"
+    r"oz|ounces?|lb|pounds?|cloves?|sprigs?|pinch(?:es)?|cans?|tins?|sticks?)", re.I)
+
+
+def _ingredient_name(text: str) -> str:
+    """Strip a leading quantity from a replacement name.
+
+    substitute() replaces the ingredient's *name*; the amount and unit are kept from the
+    original and re-rendered around it. A model that helpfully sends "2 tbsp olive oil"
+    therefore produces "2 tbsp 2 tbsp olive oil" and, since the swap is permanent, writes
+    that into the saved recipe and its step text. Cheaper to normalise than to rely on
+    every model reading the description carefully.
+    """
+    stripped = _AMOUNT_PREFIX.sub("", text, count=1).strip()
+    # If all that survives is a unit, the input was never a name and stripping made it worse.
+    if not stripped or _UNIT_ONLY.fullmatch(stripped):
+        return text.strip()
+    return stripped
+
+
 @tool(
     "substitute",
     "Replace an ingredient in a loaded recipe (by id or name). This edits the saved recipe "
@@ -773,7 +801,7 @@ def _ingredient(recipe, ref: str):
     _params({
         "recipe_id": {"type": "string"},
         "ingredient_id": {"type": "string", "description": "ingredient id or name"},
-        "replacement": {"type": "string"},
+        "replacement": {"type": "string", "description": "the new ingredient NAME only, no amount: 'olive oil', not '2 tbsp olive oil'. The original amount and unit are kept"},
         "note": {"type": "string", "description": "e.g. '1:1 by volume'"},
         "at_step": {"type": "string"},
     }, ["recipe_id", "ingredient_id", "replacement"]),
@@ -782,7 +810,7 @@ def substitute(ctx: ToolContext, recipe_id: Any = None, ingredient_id: Any = Non
                note: Any = None, at_step: Any = None, ingredient: Any = None) -> Tuple[str, Optional[str]]:
     recipe = _recipe(ctx, _str(recipe_id, "recipe_id"))
     ing = _ingredient(recipe, _str(ingredient_id or ingredient, "ingredient_id", required=True) or "")
-    rep = _str(replacement, "replacement", required=True) or ""
+    rep = _ingredient_name(_str(replacement, "replacement", required=True) or "")
     step = _step_id(ctx, str(at_step), recipe) if at_step else None
     ov = ctx.session.overlays[recipe.id]
     ov.substitutions = [x for x in ov.substitutions if x.ingredient_id != ing.id]

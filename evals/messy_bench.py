@@ -126,8 +126,10 @@ SCENARIOS: List[Scenario] = [
     Scenario(
         "dropped_garlic", setup_meal,
         "I just dropped half the garlic on the floor.",
+        # Was a grep for the literal word "garlic", which failed "two smashed cloves will
+        # still flavor the chicken fine" - good advice that happens to say cloves.
         lambda s, r, t, c: (
-            "garlic" in r.lower() and len(r.split()) >= 5,
+            any(w in r.lower() for w in ("garlic", "clove", "smash")) and len(r.split()) >= 5,
             f"reply={r[:110]!r}"),
         "a mishap with no tool for it: it still needs a useful answer",
     ),
