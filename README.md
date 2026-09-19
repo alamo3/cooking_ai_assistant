@@ -302,7 +302,22 @@ setx OPENROUTER_API_KEY "sk-or-..."   # once, then open a new terminal
 ```
 
 `COOK_OPENROUTER_MODEL` defaults to `openai/gpt-oss-120b`;
-`COOK_OPENROUTER_REASONING` sets `low`/`medium`/`high` for models that take a reasoning effort.
+`COOK_OPENROUTER_REASONING` sets `low`/`medium`/`high` for models that take a reasoning effort;
+`COOK_OPENROUTER_MAX_TOKENS` defaults to 4096.
+
+**Running out of that budget does not give a shorter answer, it gives a broken one.** It is
+one allowance shared by the thinking and the reply, so with reasoning off a JSON answer stops
+mid-string, and with reasoning on the whole budget can go to thinking and leave `content`
+empty. Both used to reach the caller as a bare `JSONDecodeError` - the second as "Expecting
+value: line 1 column 1 (char 0)", which says nothing about what happened. The client now reads
+`finish_reason`: a truncated structured answer is retried once on four times the budget (to a
+32k ceiling) and then raised with the numbers and the two settings that would fix it, while
+truncated prose is returned with a warning, because it is still readable and a redo costs real
+money. Backfilling the largest stored recipe at `medium` used 4,088 of the 4,096 tokens.
+
+A tool call whose arguments arrive cut off is dropped rather than run with empty arguments.
+`get_plan` with nothing in it is harmless; `set_timer` with nothing in it is a timer with no
+duration that the cook is told is running.
 `GET /health` reports `usage` (requests, tokens, `cost_usd`) and `fallbacks_to_local`, so a
 meal's actual spend is measurable rather than estimated. Rate limits and 5xx are retried
 twice with short backoff (about 1.5 s total) and then handed to the fallback, because a cook

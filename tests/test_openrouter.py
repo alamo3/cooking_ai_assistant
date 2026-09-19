@@ -70,11 +70,31 @@ async def test_stream_yields_text_then_assembled_tool_calls():
     await llm.aclose()
 
 
-async def test_malformed_tool_arguments_do_not_crash_the_turn():
+async def test_malformed_tool_arguments_drop_the_call_rather_than_emptying_it():
+    """Arguments that arrived and did not parse mean the call is not the one the model meant.
+
+    This used to run the tool with args={}, which is fine for get_plan and quietly wrong for
+    set_timer: a timer with no duration, reported to the cook as running. Dropping it leaves
+    the turn to notice the tool never ran, which the claim check already does.
+    """
     def handler(_r):
         return httpx.Response(200, content=sse(
             {"choices": [{"delta": {"tool_calls": [
                 {"index": 0, "id": "c1", "function": {"name": "get_plan", "arguments": "{not json"}}]}}]},
+        ), headers={"content-type": "text/event-stream"})
+
+    llm = make(handler)
+    calls = [c for chunk in [x async for x in llm.stream([{"role": "user", "content": "x"}])] for c in chunk.tool_calls]
+    assert calls == []
+    await llm.aclose()
+
+
+async def test_a_tool_that_takes_no_arguments_still_runs():
+    """Absent arguments are not malformed ones: no-arg tools are the common case."""
+    def handler(_r):
+        return httpx.Response(200, content=sse(
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "id": "c1", "function": {"name": "get_plan", "arguments": ""}}]}}]},
         ), headers={"content-type": "text/event-stream"})
 
     llm = make(handler)

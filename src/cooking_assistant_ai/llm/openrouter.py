@@ -95,6 +95,11 @@ def to_openai_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+# Retry ceiling for a JSON answer cut off by max_tokens. Well under any
+# provider's context so the retry itself cannot be rejected outright.
+MAX_TOKENS_CEILING = 32768
+
+
 class OpenRouterLLM(LLM):
     def __init__(self, model: str = DEFAULT_OR_MODEL, api_key: Optional[str] = None,
                  base_url: str = DEFAULT_BASE_URL, temperature: float = 0.3,
@@ -187,6 +192,7 @@ class OpenRouterLLM(LLM):
         body = self._body(messages, tools, stream=True)
         # Tool call arguments arrive as fragments keyed by index; assemble then emit at the end.
         partial: Dict[int, Dict[str, str]] = {}
+        truncated = False
         # One request per attempt: the response is consumed inside the same context it was
         # opened in, so a retry never leaves a half-read stream (or pays for two).
         for attempt in range(self.retries + 1):
@@ -215,6 +221,8 @@ class OpenRouterLLM(LLM):
                         choices = event.get("choices") or []
                         if not choices:
                             continue
+                        if choices[0].get("finish_reason") == "length":
+                            truncated = True
                         delta = choices[0].get("delta") or {}
                         for tc in delta.get("tool_calls") or []:
                             slot = partial.setdefault(int(tc.get("index", 0)), {"name": "", "arguments": ""})
@@ -237,12 +245,76 @@ class OpenRouterLLM(LLM):
             try:
                 args = json.loads(slot["arguments"] or "{}")
             except ValueError:
-                log.warning("unparsable tool arguments from %s: %r", self.model, slot["arguments"][:200])
-                args = {}
+                # Calling the tool anyway is worse than not calling it: a set_timer whose
+                # arguments were cut off becomes a timer with no duration, and the cook is
+                # told it is running. Drop it and let the turn notice the tool never ran.
+                log.warning("unparsable tool arguments from %s%s: %r", self.model,
+                            " (answer hit the token limit)" if truncated else "",
+                            slot["arguments"][:200])
+                continue
             calls.append(ToolCallRequest(name=slot["name"], args=dict(args or {})))
+        if truncated:
+            log.warning("%s hit the %d-token limit mid-answer", self.model, self.max_tokens)
         yield Chunk(tool_calls=calls, done=True)
 
     # -- one-shot -----------------------------------------------------------
+
+    async def _one_shot(self, body: Dict[str, Any],
+                        json_schema: Optional[Dict[str, Any]]) -> str:
+        """Post a non-streaming request, refusing to return a half-finished answer.
+
+        `max_tokens` is one budget shared by the thinking and the reply, and running out of it
+        does not produce a shorter answer - it produces a broken one. Measured against a real
+        recipe at a deliberately small budget: with reasoning off the JSON stops mid-string,
+        and with reasoning on the whole budget goes to thinking and `content` comes back
+        empty. Both surfaced to the caller as an unexplained JSONDecodeError, one of them as
+        "Expecting value: line 1 column 1 (char 0)", which says nothing about what went wrong.
+
+        So a `length` finish is caught here. With a schema the answer is unusable and worth
+        real money to redo, so it is retried once on a bigger budget; without one the prose is
+        at least readable and only warrants a warning.
+        """
+        if json_schema:
+            body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "result", "strict": False, "schema": json_schema},
+            }
+        budget = int(body.get("max_tokens") or self.max_tokens)
+        for attempt in range(2):
+            body["max_tokens"] = budget
+            r = await self._post(body)
+            payload = r.json()
+            if payload.get("usage"):
+                self.usage.add(payload["usage"])  # a truncated attempt is billed too
+            choices = payload.get("choices") or []
+            if not choices:
+                return ""
+            choice = choices[0]
+            content = (choice.get("message") or {}).get("content") or ""
+            if choice.get("finish_reason") != "length":
+                return content
+
+            thought = ((payload.get("usage") or {}).get("completion_tokens_details")
+                       or {}).get("reasoning_tokens") or 0
+            spent = (f"{thought} of them on reasoning" if thought
+                     else "none of it reported as reasoning")
+            if not json_schema:
+                log.warning("%s hit the %d-token limit; answer is cut short (%s)",
+                            self.model, budget, spent)
+                return content
+            roomier = min(budget * 4, MAX_TOKENS_CEILING)
+            if attempt == 0 and roomier > budget:
+                log.warning("%s hit the %d-token limit with %d chars of JSON (%s); "
+                            "retrying with %d", self.model, budget, len(content), spent,
+                            roomier)
+                budget = roomier
+                continue
+            raise RuntimeError(
+                f"{self.model} could not finish a JSON answer within {budget} tokens "
+                f"({spent}; {len(content)} characters returned). Raise "
+                f"COOK_OPENROUTER_MAX_TOKENS, or turn reasoning down with "
+                f"COOK_OPENROUTER_REASONING=off.")
+        return ""
 
     async def search(self, messages: List[Dict[str, Any]],
                      json_schema: Optional[Dict[str, Any]] = None,
@@ -255,36 +327,11 @@ class OpenRouterLLM(LLM):
         """
         body = self._body(messages, None, stream=False)
         body["plugins"] = [{"id": "web", "max_results": max_results}]
-        if json_schema:
-            body["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {"name": "result", "strict": False, "schema": json_schema},
-            }
-        r = await self._post(body)
-        payload = r.json()
-        if payload.get("usage"):
-            self.usage.add(payload["usage"])  # search results are billed too
-        choices = payload.get("choices") or []
-        if not choices:
-            return ""
-        return ((choices[0].get("message") or {}).get("content") or "").strip()
+        return (await self._one_shot(body, json_schema)).strip()
 
     async def complete(self, messages: List[Dict[str, Any]],
                        json_schema: Optional[Dict[str, Any]] = None) -> str:
-        body = self._body(messages, None, stream=False)
-        if json_schema:
-            body["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {"name": "result", "strict": False, "schema": json_schema},
-            }
-        r = await self._post(body)
-        payload = r.json()
-        if payload.get("usage"):
-            self.usage.add(payload["usage"])
-        choices = payload.get("choices") or []
-        if not choices:
-            return ""
-        return (choices[0].get("message") or {}).get("content") or ""
+        return await self._one_shot(self._body(messages, None, stream=False), json_schema)
 
     async def warm(self) -> None:
         return None  # nothing to load; the provider is always ready
