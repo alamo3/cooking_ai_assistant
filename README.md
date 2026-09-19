@@ -585,9 +585,10 @@ those names contain the offending word. Tested against the old checker, seven of
 hard cases were wrongly allowed - including rennet, bone broth and parmesan in a vegetarian
 kitchen.
 
-`Ingredient.contains` and `may_contain` hold the model's answer, decided at import: which of
-meat, pork, seafood, dairy, egg, honey, alcohol the ingredient really has, and which only
-some brands use.
+`Ingredient.contains` and `may_contain` hold the model's answer: which of meat, pork,
+seafood, dairy, egg, honey, alcohol the ingredient really has, and which only some brands use.
+Unlike `key`, they are not set at import — they are written only by `classify-steps`, which
+puts the question on its own and confirms it, for the reasons below.
 
 **Negation is the one bit of grammar worth encoding.** The lists read "non-dairy milk" as
 milk, "flax egg" as egg and "imitation crab" as crab, and once they became the only thing
@@ -595,30 +596,38 @@ allowed to exclude, that blocked a vegan cook's own shopping. A name containing 
 `-free`, `mock`, `imitation`, `substitute`, `replacer`, `alternative`, `plant-based` or
 `vegan` denies the thing it mentions, and inverts every term after it.
 
-**The model may clear an ingredient but never condemn one.** Three passes over a real vegan
-library produced "tofu contains meat", "flour contains meat" and "baguette contains meat",
-which would have refused the cook their own recipes. It turns out to be reliable at judging a
-sentence — prep detection was right every time — and unreliable at recalling what a product is
-made of. So the word lists keep the power to exclude, being narrow but precise, and anything
-the model raises becomes a check-the-label note:
+**A condemnation has to be agreed twice; a clearance does not.** Backfilling a real vegan
+library, the model called tofu meat, flour and a baguette dairy, sesame oil seafood and soy
+sauce dairy. Every one of those would have sat in the database quietly refusing the cook their
+own recipes, with nothing ever re-examining it.
+
+The cause turned out not to be what the model knows. Those judgements came from the big
+per-recipe call that also asked about steps and grocery names, and the categories it invented
+were exactly the ones named in the prompt's own examples — caesar dressing seafood, marshmallows
+meat, parmesan dairy — with two ingredients coming back with the identical triple. The examples
+were bleeding into the answers. Asked on its own, about names and nothing else, the same model
+with the same examples clears all of them and scores 26 of 27 against a fixed ground truth.
+
+So composition is a separate call, and even then it is confirmed before it is stored. Anything
+the word lists cannot already judge is asked again in isolation, and only what both passes
+agree on is written to `contains`. Where they disagree — one definite, one brand-dependent, or
+one silent — it is demoted to `may_contain`, which warns rather than bans:
 
 ```
 caesar dressing  vegetarian  -> check:    may contain fish or shellfish; check the label
 chicken stock    vegan       -> excluded: chicken is not vegan
-tofu             vegan       -> check:    may contain meat; check the label   (a bad guess,
-                                          annoying rather than harmful)
+gochujang paste  vegan       -> check:    may contain seafood; check the label
+tofu             vegan       -> (first pass said meat, second cleared it; nothing stored)
 ```
 
-A clearance overrides the word lists, because no list will ever hold the brands and reading
-"Oatly" or "Violife cheddar" is exactly what the model is good at. A condemnation does not,
-because recalling what a product is made of is exactly what it is bad at.
+Over the sixteen-recipe library that leaves two ingredients flagged — gochujang and red curry
+paste, both genuinely anchovy- or shrimp-paste-dependent on the brand — no recipe refused, and
+none of the false condemnations that survived a single pass.
 
-In the end `classify-steps` writes only the prep flags and grocery keys. Composition was
-measured over three passes of a real library and produced "tofu contains meat", "flour
-contains meat" and "baguette contains meat" — different nonsense each time — and a wrong
-check-the-label note is the same cry-wolf noise this codebase keeps avoiding everywhere
-else. The field and the checking stay; nothing populates them until that can be done
-reliably.
+A clearance still overrides the word lists on its own, because no list will ever hold the
+brands and reading "Oatly" or "Violife cheddar" is exactly what the model is good at. The
+asymmetry is about consequence, not confidence: being wrongly cleared costs a label check,
+being wrongly condemned costs the cook their dinner.
 
 Every answer is matched back by the name the model echoes, and anything that does not match is
 discarded. An earlier version asked for four arrays indexed by position, and a single slip

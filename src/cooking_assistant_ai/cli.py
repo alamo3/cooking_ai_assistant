@@ -181,48 +181,105 @@ def _show(result) -> None:
 
 
 async def classify_steps(args: argparse.Namespace) -> None:
-    """Backfill the model's judgements onto stored recipes: which steps are prep, what each
-    ingredient contains, and its plain grocery name.
+    """Backfill the model's judgements onto stored recipes: which steps are prep, each
+    ingredient's plain grocery name, and what it contains.
 
     All three are semantic questions a word list cannot answer. A verb heuristic cannot tell
-    "Tuck the garlic and lemon halves around the thighs" from real prep; no list of meat words
-    knows caesar dressing has anchovies in it. Asked once per recipe and stored, so nothing
-    pays for it at cook time.
+    "Tuck the garlic and lemon halves around the thighs" from real prep, and no list of meat
+    words knows caesar dressing has anchovies in it.
 
-    Every answer carries the name or number it is about, and anything that does not match is
-    discarded. An earlier version asked for four parallel arrays indexed by position, and one
-    slip produced "Crushed Garlic contains meat, pork, seafood, dairy, egg, honey, alcohol"
-    with nothing able to notice.
+    Composition is asked on its own and then confirmed, for reasons that were measured rather
+    than assumed. Asked inside the big per-recipe call it is badly wrong: over the real library
+    it called tofu meat, flour and a baguette dairy, sesame oil seafood and soy sauce dairy -
+    and the categories it invented were exactly the ones named in the examples, two ingredients
+    coming back with the identical triple. A long prompt about something else lets the examples
+    bleed into the answer. Asked alone about names only, the same model and the same examples
+    clear all of them and score 26 of 27 against a fixed ground truth.
+
+    So the recipe call judges steps and grocery names, and composition is a separate question
+    put on its own. Even then a condemnation is confirmed before it is stored: this value sits
+    in the database deciding whether a dish is allowed, with nobody ever re-examining it, and a
+    rare error that is fine in a suggestion is not fine in a stored fact. Anything the word
+    lists do not already recognise is asked again in isolation and kept only where both passes
+    agree. Where they disagree it is demoted to may_contain, which warns rather than excludes.
+
+    Every answer carries the name it is about and anything that does not match is discarded.
+    An earlier version asked for parallel arrays indexed by position, and one slip produced
+    "Crushed Garlic contains meat, pork, seafood, dairy, egg, honey, alcohol".
     """
     from dataclasses import replace as _replace
 
+    from cooking_assistant_ai.core.diet import check_ingredient, reconcile
     from cooking_assistant_ai.llm.factory import build_llm
     from cooking_assistant_ai.storage.db import Store
 
     CATEGORIES = ["meat", "pork", "seafood", "dairy", "egg", "honey", "alcohol"]
+
+    # Both directions, deliberately. An earlier prompt gave only examples of hidden animal
+    # products, and a list of positives biases the answer toward finding them: it scored 23
+    # of 27 against 26 with these. Only ever sent in a call about nothing else.
+    BALANCE = ("Judge the food, not the word, in both directions. A few foods hide an animal "
+               "product: caesar dressing contains seafood (anchovies), marshmallows contain "
+               "meat (gelatin), worcestershire contains seafood, parmesan contains dairy. "
+               "Far more contain nothing at all: tofu is soy, flour is wheat, a baguette is "
+               "flour and water and yeast, soy sauce has no fish in it, vinegar is not "
+               "alcoholic. Most ingredients are plants and the answer is an empty list. Only "
+               "name a category you are confident the product really contains; never guess "
+               "from the name or from what it is usually served with.")
+
     store = Store(args.db or os.environ.get("COOK_DB", "cooking.db"))
     llm = build_llm()
-    schema = {
+    recipe_schema = {
         "type": "object",
         "properties": {
             "steps": {"type": "array", "items": {
                 "type": "object",
-                "properties": {"n": {"type": "integer"}, "text": {"type": "string"},
-                               "prep": {"type": "boolean"}},
+                "properties": {"n": {"type": "integer"}, "prep": {"type": "boolean"}},
                 "required": ["n", "prep"]}},
             "ingredients": {"type": "array", "items": {
                 "type": "object",
-                "properties": {
-                    "n": {"type": "integer"},
-                    "name": {"type": "string"},
-                    "key": {"type": "string"},
-                    "contains": {"type": "array", "items": {"type": "string", "enum": CATEGORIES}},
-                    "may_contain": {"type": "array", "items": {"type": "string", "enum": CATEGORIES}},
-                },
-                "required": ["n", "name", "key", "contains", "may_contain"]}},
+                "properties": {"n": {"type": "integer"}, "name": {"type": "string"},
+                               "key": {"type": "string"}},
+                "required": ["n", "name", "key"]}},
         },
         "required": ["steps", "ingredients"],
     }
+    composition_schema = {
+        "type": "object",
+        "properties": {"ingredients": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "contains": {"type": "array", "items": {"type": "string", "enum": CATEGORIES}},
+                "may_contain": {"type": "array", "items": {"type": "string", "enum": CATEGORIES}},
+            },
+            "required": ["name", "contains", "may_contain"]}}},
+        "required": ["ingredients"],
+    }
+
+    def known_to_the_lists(name: str) -> bool:
+        """The word lists already handle it, so a model opinion adds nothing to confirm."""
+        return any(check_ingredient(name, d) is not None for d in ("vegan", "halal"))
+
+    async def ask_composition(names):
+        """Names only, nothing else in the call. Returns {lowercased name: (contains, may)}."""
+        listing = "\n".join(f"{n}. {x}" for n, x in enumerate(names, start=1))
+        raw = await llm.complete([{"role": "user", "content":
+            "For each ingredient below, repeat its name exactly, then list which of meat, "
+            "pork, seafood, dairy, egg, honey, alcohol the ordinary product genuinely "
+            "contains, and separately which only some brands use - anchovy in some gochujang, "
+            "fish sauce in some kimchi. Brand-dependent belongs in may_contain, which warns, "
+            "never in contains, which bans.\n" + BALANCE + "\n\n" + listing}],
+            json_schema=composition_schema)
+        out = {}
+        for row in json.loads(raw).get("ingredients", []):
+            if isinstance(row, dict) and row.get("name"):
+                out[str(row["name"]).strip().lower()] = (
+                    {str(c).strip().lower() for c in (row.get("contains") or [])
+                     if str(c).strip().lower() in CATEGORIES},
+                    {str(c).strip().lower() for c in (row.get("may_contain") or [])
+                     if str(c).strip().lower() in CATEGORIES})
+        return out
 
     for recipe in store.list_recipes():
         judged = (all(s.prep is not None for s in recipe.steps)
@@ -233,31 +290,22 @@ async def classify_steps(args: argparse.Namespace) -> None:
 
         step_lines = "\n".join(f"{n}. {s.text}" for n, s in enumerate(recipe.steps, start=1))
         item_lines = "\n".join(f"{n}. {i.name}" for n, i in enumerate(recipe.ingredients, start=1))
-        raw = await llm.complete([{"role": "user", "content":
-            f"Recipe: {recipe.title}\n\n"
-            "STEPS - repeat each step's number and answer prep: is it preparation done before "
-            "anything is on the heat (chopping, rinsing, peeling, measuring, seasoning raw "
-            "ingredients, making a marinade)? Cooking, resting, assembling and serving are "
-            "not prep. Judge each step whole: 'Tuck the garlic and lemon halves around the "
-            "thighs' is cooking despite the word halves.\n\n"
-            f"{step_lines}\n\n"
-            "INGREDIENTS - repeat each ingredient's number and name exactly as written, then:\n"
-            "key: the plain grocery name, lowercase, no amount, preparation or brand. "
-            "'Medium Onion (White, Yellow or Brown, Chopped)' and 'onions' are both 'onion'; "
-            "'1 19oz can black beans' is 'black beans'. Same item, same key; different items, "
-            "different keys - ground coriander seed is not fresh coriander leaf.\n"
-            "contains: which categories the ordinary product genuinely contains, empty when "
-            "none. Judge the food, not the word: caesar dressing contains seafood, "
-            "marshmallows contain meat, parmesan contains dairy and meat. But soy sauce has "
-            "no seafood, vinegar is not alcoholic, and a vegetable is just a vegetable - do "
-            "not guess.\n"
-            "may_contain: categories only SOME brands use, such as anchovy in some gochujang "
-            "or fish sauce in some kimchi. These raise a check-the-label warning instead of "
-            "banning the dish, so anything brand-dependent belongs here.\n\n"
-            f"{item_lines}"}], json_schema=schema)
-
         try:
-            answer = json.loads(raw)
+            answer = json.loads(await llm.complete([{"role": "user", "content":
+                f"Recipe: {recipe.title}\n\n"
+                "STEPS - repeat each step's number and answer prep: is it preparation done "
+                "before anything is on the heat (chopping, rinsing, peeling, measuring, "
+                "seasoning raw ingredients, making a marinade)? Cooking, resting, assembling "
+                "and serving are not prep. Judge each step whole: 'Tuck the garlic and lemon "
+                "halves around the thighs' is cooking despite the word halves.\n\n"
+                f"{step_lines}\n\n"
+                "INGREDIENTS - repeat each ingredient's number and name exactly as written, "
+                "then key: the plain grocery name, lowercase, no amount, preparation or "
+                "brand. 'Medium Onion (White, Yellow or Brown, Chopped)' and 'onions' are "
+                "both 'onion'; '1 19oz can black beans' is 'black beans'. Same item, same "
+                "key; different items, different keys - ground coriander seed is not fresh "
+                "coriander leaf.\n\n"
+                f"{item_lines}"}], json_schema=recipe_schema))
         except ValueError:
             print(f"  {recipe.id} {recipe.title}: unreadable answer, left alone")
             continue
@@ -271,7 +319,7 @@ async def classify_steps(args: argparse.Namespace) -> None:
 
         # Matched on the name the model echoed back, so a shifted or partial answer drops the
         # rows it got wrong instead of relabelling the wrong ingredient.
-        answers, mismatched = {}, 0
+        keys, mismatched = {}, 0
         for row in answer.get("ingredients") or []:
             if not isinstance(row, dict):
                 continue
@@ -281,30 +329,59 @@ async def classify_steps(args: argparse.Namespace) -> None:
             if recipe.ingredients[n - 1].name.strip().lower() != name:
                 mismatched += 1
                 continue
-            answers[n] = row
+            keys[n] = str(row.get("key") or "").strip().lower()
 
-        new_items = []
+        # Composition, asked on its own. Only names the word lists cannot already judge: the
+        # rest are excluded on the name alone and a model opinion changes nothing.
+        unknown = sorted({i.name for i in recipe.ingredients if not known_to_the_lists(i.name)})
+        first = {}
+        if unknown:
+            try:
+                first = await ask_composition(unknown)
+            except Exception as e:
+                print(f"  {recipe.id}: composition unreadable ({type(e).__name__}), left unset")
+                first = None
+
+        flagged = sorted(name for name in unknown
+                         if first and any(first.get(name.strip().lower(), ((), ()))))
+        second = {}
+        if flagged:
+            try:
+                second = await ask_composition(flagged)
+            except Exception as e:
+                print(f"  {recipe.id}: second opinion failed ({type(e).__name__}), "
+                      f"composition left unset")
+                second = None
+
+        new_items, demoted = [], 0
         for n, item in enumerate(recipe.ingredients, start=1):
-            row = answers.get(n)
-            if row is None:
-                new_items.append(item)
+            key = keys.get(n) or item.key
+            lower = item.name.strip().lower()
+            if first is None or known_to_the_lists(item.name):
+                new_items.append(_replace(item, key=key))
                 continue
-            clean = lambda field: tuple(  # noqa: E731
-                str(c).strip().lower() for c in (row.get(field) or [])
-                if str(c).strip().lower() in CATEGORIES)
-            key = str(row.get("key") or "").strip().lower()
-            # Only the key is written back. Composition was measured over three passes of a
-            # real library and produced "tofu contains meat", "flour contains meat" and
-            # "baguette contains meat": different nonsense each time. Reading a name is what
-            # the model is good at; recalling what a product is made of it is not, and a
-            # wrong check-the-label note is the cry-wolf noise this codebase keeps avoiding.
-            new_items.append(_replace(item, key=key or item.key))
+            f_contains, f_may = first.get(lower, (set(), set()))
+            if not f_contains and not f_may:
+                new_items.append(_replace(item, key=key, contains=(), may_contain=()))
+                continue
+            if second is None:                      # the check itself failed; claim unusable
+                new_items.append(_replace(item, key=key))
+                continue
+            contains, maybe = reconcile((f_contains, f_may),
+                                        second.get(lower, (set(), set())))
+            demoted += len(maybe)
+            new_items.append(_replace(item, key=key, contains=contains, may_contain=maybe))
 
         store.put_recipe(_replace(recipe, steps=new_steps, ingredients=tuple(new_items)))
         marks = "".join("P" if s.prep else "." for s in new_steps)
-        note = ""
+        found = sorted({c for i in new_items for c in (i.contains or ())})
+        maybe_all = sorted({c for i in new_items for c in (i.may_contain or ())})
+        note = f"   contains: {', '.join(found)}" if found else ""
+        note += f"   may contain: {', '.join(maybe_all)}" if maybe_all else ""
+        if flagged:
+            note += f"   ({len(flagged)} re-asked, {demoted} demoted on disagreement)"
         if mismatched:
-            note += f"   ({mismatched} answer(s) did not match an ingredient, skipped)"
+            note += f"   ({mismatched} answer(s) did not match, skipped)"
         print(f"  {recipe.id} {recipe.title}: {marks}{note}")
 
     close = getattr(llm, "aclose", None)

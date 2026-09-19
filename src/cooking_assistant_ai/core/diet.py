@@ -231,3 +231,21 @@ def describe(diet: str) -> str:
         "vegan": ("Vegan kitchen: never suggest meat, poultry, fish, shellfish, dairy, eggs "
                   "or honey."),
     }.get(diet, "No dietary restriction.")
+
+
+def reconcile(first, second):
+    """Combine two independent readings of what an ingredient contains.
+
+    A stored `contains` bans a dish, and nobody ever re-examines it, so it takes both passes
+    agreeing. Anything only one pass claimed, or that one called definite and the other merely
+    possible, comes back as `may_contain`, which warns instead. Asked alone this model is
+    right about composition, but it is not right often enough that a lone answer should be
+    allowed to quietly forbid someone's dinner.
+
+    Each argument is (contains, may_contain). Returns the same shape, sorted.
+    """
+    first_contains, first_may = ({str(c).strip().lower() for c in side} for side in first)
+    second_contains, second_may = ({str(c).strip().lower() for c in side} for side in second)
+    agreed = first_contains & second_contains
+    maybe = ((first_contains | first_may) & (second_contains | second_may)) - agreed
+    return tuple(sorted(agreed)), tuple(sorted(maybe))
