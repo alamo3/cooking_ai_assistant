@@ -211,6 +211,7 @@ def _compress_indices(idx: List[int]) -> str:
 
 def render_progress(session: Session) -> str:
     lines = ["PROGRESS"]
+    moving = False
     if not session.recipes:
         lines.append("No recipes loaded.")
     for r in session.recipes.values():
@@ -228,10 +229,17 @@ def render_progress(session: Session) -> str:
             status = f"steps {_compress_indices(done_idx)} done"
             if skipped_idx:
                 status += f", {_compress_indices(skipped_idx)} skipped"
-        if nxt is not None and (done_idx or skipped_idx):
+        # Always say where the cook is standing, including before anything is done. It used
+        # to be omitted until a step had been ticked off, which is precisely the moment the
+        # model most needs telling that the tablet is still on step 1.
+        if nxt is not None:
             nidx = all_steps.index(nxt) + 1
-            status += f'. Next: step {nidx} "{nxt.text[:60]}"'
+            status += f'. COOK IS ON step {nidx}: "{nxt.text[:70]}"'
+            moving = True
         lines.append(f"{r.title} ({r.id}): {status}.")
+    if moving:
+        lines.append("Only advance_step moves that pointer; until you call it the cook is "
+                     "still looking at the step above.")
     changes = render_all_changes(session)
     if changes:
         lines.append(changes)

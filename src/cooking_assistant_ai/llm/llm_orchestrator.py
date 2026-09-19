@@ -525,7 +525,7 @@ class Orchestrator:
                 # The model walking the cook forward under its own steam. The giveaway is its
                 # own reply rather than anything the cook said, so this applies to a proactive
                 # turn too, and to one that called other tools but never recorded the step.
-                if missed is None and not (gate.tools_ok & {"mark_complete", "skip_step"}):
+                if missed is None and not (gate.tools_ok & {"advance_step", "mark_complete", "skip_step"}):
                     missed = step_moved_on(text, self.session)
                 if missed is not None:
                     omissions_left -= 1

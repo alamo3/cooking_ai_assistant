@@ -542,6 +542,45 @@ what has been recorded), the model owns judgement (what the cook meant, what to 
 something goes wrong, when to ask). A guardrail that silently corrected state would make the
 assistant a state machine with a voice; one that asks keeps it a cook's assistant.
 
+## The step that never advanced
+
+Journal `2026-09-19-4bd8b62a`: seventeen turns of a tofu scramble, ten tool calls, not one of
+them recording a step. The model narrated all three steps correctly and in order while the
+tablet sat on step 1 from the first word to the last. `current_step` is derived from
+`completed_steps`, so the view was never wrong - nothing ever told it the kitchen had moved.
+
+The first fix read the model's own reply and compared it against the recipe's step text: if it
+was walking the cook through a later step, the earlier ones were implied done. It worked, and
+it was still the wrong shape. Matching words is a guess about what the model meant, and a
+guess that is right today is right by luck tomorrow.
+
+So advancing is a tool. [`advance_step`](src/cooking_assistant_ai/core/tools.py) takes the
+step the cook is being sent to, records every earlier step of that recipe as done, completes
+any task those steps finished, stops its timers, and returns the step with the cook's
+substitutions applied and the amounts it needs. The state changes because the model acted, not
+because a regex agreed with it.
+
+Returning the step is what makes it worth calling rather than a chore to remember. "How much,
+and for what dish" was the thing the cook kept having to ask for, and the answer now arrives
+in the same call that moves them on, already scaled and already swapped:
+
+```
+advance_step(step_id=3, recipe_id=r001)
+  -> Roast Chicken Thighs step 3 of 7: Melt the butter in an oven-safe skillet over
+     medium-high heat. Sear the thighs skin side down until deep golden, about 5 minutes.;
+     needs 4 tbsp butter; 5m; 2 earlier step(s) recorded as done
+```
+
+Going backwards is refused, because reopening a step undoes finished tasks and running timers
+and that should be the cook's decision, and the refusal says to use `mark_complete` instead.
+A skipped step is refused rather than quietly un-skipped. The PROGRESS block now always names
+the step the cook is standing on - it used to omit it until something had been ticked off,
+which is exactly the moment the model most needs telling that the tablet has not moved.
+
+The word matching is kept, demoted to a backstop: if a turn walks the cook forward and calls
+no tool at all, it still nudges. It only ever nudges - the model decides - so a miss costs
+nothing and a false alarm costs one extra round.
+
 ## Claim checking had silently stopped working
 
 Every rule in [claims.py](src/cooking_assistant_ai/core/claims.py) required the first person

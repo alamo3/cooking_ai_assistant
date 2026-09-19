@@ -134,7 +134,7 @@ _OMISSION_RULES: List[Tuple[str, "re.Pattern[str]", FrozenSet[str]]] = [
                 r"(?:oven|stove|stovetop|heat|burner|pan|air fryer|grill)\b"
                 r"|\b(?:the\s+)?\w+\s+(?:is|are)\s+(?:now\s+)?(?:on|in|simmering|boiling|roasting|frying|"
                 r"searing|baking|cooking)\b", re.I),
-     frozenset({"start_task", "mark_complete", "set_timer"})),
+     frozenset({"advance_step", "start_task", "mark_complete", "set_timer"})),
     ("done",
      # The verb list is open-ended by nature - a recorded cook said "I've mashed the tofu",
      # which none of these covered - so it also accepts any past-tense verb after "I've".
@@ -146,7 +146,7 @@ _OMISSION_RULES: List[Tuple[str, "re.Pattern[str]", FrozenSet[str]]] = [
                 r"|\b(?:finished|done with)\s+(?:the\s+)?\w+"
                 # "okay, I'm ready for the spices" says the step before them is behind us.
                 r"|\bi'?m\s+ready\s+for\b", re.I),
-     frozenset({"mark_complete", "complete_prep", "start_task", "skip_step"})),
+     frozenset({"advance_step", "mark_complete", "complete_prep", "start_task", "skip_step"})),
     ("skipped",
      re.compile(r"\b(?:i'?m\s+)?(?:skipping|skip|leaving out|not doing|no)\s+(?:the\s+)?step\b"
                 r"|\bskip(?:ping)?\s+(?:the\s+)?\w+\s+step\b", re.I),
@@ -241,7 +241,7 @@ def step_moved_on(utterance: str, session: Optional[Session]) -> Optional[Omissi
         return None
     _score, title, open_n, _open_id = best
     return Omission(
-        "advanced", utterance, frozenset({"mark_complete", "skip_step"}),
+        "advanced", utterance, frozenset({"advance_step", "mark_complete", "skip_step"}),
         detail=(f"the reply walks the cook through a later step of {title} while step "
                 f"{open_n} is still open"))
 
@@ -249,11 +249,11 @@ def step_moved_on(utterance: str, session: Optional[Session]) -> Optional[Omissi
 def omission_prompt(omission: Omission) -> str:
     if omission.detail:
         return (
-            "[SYSTEM] " + omission.describe() + ". The cook cannot see a step tick over until "
-            "it is recorded, so the tablet is still showing them the earlier one. If they are "
-            "genuinely past it, call mark_complete for the steps they have finished. If you "
-            "were only describing what is coming, or you are not sure they have done it, ask "
-            "them. Then reply to the cook as normal."
+            "[SYSTEM] " + omission.describe() + ". The tablet is still showing them the earlier "
+            "one. If you are sending them to a new step, call advance_step for it. If they "
+            "finished something out of order, call mark_complete. If you were only "
+            "describing what is coming, or are not sure they have done it, ask them. Then "
+            "reply to the cook as normal."
         )
     return (
         "[SYSTEM] That turn changed nothing in the state, but " + omission.describe() + ". "

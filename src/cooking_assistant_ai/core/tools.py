@@ -655,7 +655,28 @@ def mark_complete(ctx: ToolContext, step_ids: Any = None, task_id: Any = None, s
         finished.append(t.label)
     elif not done:
         raise ToolError("give step_ids or task_id")
-    # A task whose steps are all complete is complete too.
+    finished.extend(_settle_tasks(ctx))
+    msg_bits = []
+    if done:
+        names = []
+        for sid in done:
+            found = s.find_step(sid)
+            if found:
+                names.append(f"{found[0].title} step {found[0].step_index(sid) if found[0].step_index(sid) > 0 else sid}")
+        msg_bits.append("completed " + ", ".join(names))
+    if finished:
+        msg_bits.append("task(s) done: " + ", ".join(finished))
+    return "state", "; ".join(msg_bits)
+
+
+def _settle_tasks(ctx: ToolContext) -> List[str]:
+    """A task whose steps are all complete is complete too; its timers stop.
+
+    Shared by mark_complete and advance_step so the two cannot drift apart about what
+    finishing a step does to the task that owns it.
+    """
+    s = ctx.session
+    finished: List[str] = []
     for t in s.tasks.values():
         if t.is_open and t.step_ids and all(sid in s.completed_steps for sid in t.step_ids):
             t.status = "complete"
@@ -669,17 +690,78 @@ def mark_complete(ctx: ToolContext, step_ids: Any = None, task_id: Any = None, s
                 if tm.task_id == t.id and tm.status == "running":
                     tm.status = "cancelled"
     scheduler.resolve(s, ctx.now)
-    msg_bits = []
-    if done:
-        names = []
-        for sid in done:
-            found = s.find_step(sid)
-            if found:
-                names.append(f"{found[0].title} step {found[0].step_index(sid) if found[0].step_index(sid) > 0 else sid}")
-        msg_bits.append("completed " + ", ".join(names))
+    return finished
+
+
+@tool(
+    "advance_step",
+    "Move the cook on to a recipe step, recording every earlier step of that recipe as done. "
+    "Call this whenever you tell the cook to begin a new step - it is the only thing that moves "
+    "the tablet on, and until you call it they are still looking at the previous one. Returns "
+    "the step with their swaps applied and the amounts it needs, so read it back from here "
+    "rather than from memory.",
+    _params({"step_id": {"type": "string", "description": "step id, or its number in the recipe"},
+             "recipe_id": {"type": "string", "description": "needed only if step_id is a bare number"}},
+            ["step_id"]),
+    mid_cook=True,
+)
+def advance_step(ctx: ToolContext, step_id: Any = None, recipe_id: Any = None) -> Tuple[str, Optional[str]]:
+    from cooking_assistant_ai.core.plan import mentions_ingredient, substitute_text
+
+    s = ctx.session
+    recipe = _recipe(ctx, _str(recipe_id, "recipe_id")) if recipe_id else None
+    ref = _str(step_id, "step_id", required=True) or ""
+    if recipe is None and ref.isdigit():
+        # "advance_step(3)" is the obvious call when one dish is on, and refusing it over a
+        # missing recipe_id would be pedantry. With several loaded it really is ambiguous.
+        loaded = list(s.recipes.values())
+        if len(loaded) == 1:
+            recipe = loaded[0]
+        else:
+            raise ToolError(f"step '{ref}' is ambiguous with {len(loaded)} recipes loaded; "
+                            f"pass recipe_id, or the step's id. Loaded: "
+                            + ", ".join(f"{r.id} ({r.title})" for r in loaded))
+    sid = _step_id(ctx, ref, recipe)
+    found = s.find_step(sid)
+    if found is None:
+        raise ToolError(f"no step '{step_id}' in the loaded recipes")
+    recipe, step = found
+    ov = s.overlays[recipe.id]
+    n = recipe.step_index(sid)
+
+    if sid in ov.skipped_steps:
+        raise ToolError(f"step {n} of {recipe.title} was skipped; move to a later step, "
+                        f"or ask the cook whether they want to do it after all")
+    if sid in s.completed_steps:
+        # Refusing rather than silently reopening: going backwards is a real thing a cook
+        # does, but it undoes finished tasks and timers, so it should be their decision.
+        raise ToolError(f"step {n} of {recipe.title} is already recorded as done; if the cook "
+                        f"is doing it again, say so and use mark_complete on the steps that "
+                        f"really are finished instead")
+
+    behind = [st.id for st in recipe.steps[:n - 1]
+              if st.id not in s.completed_steps and st.id not in ov.skipped_steps]
+    s.completed_steps.update(behind)
+    finished = _settle_tasks(ctx)
+
+    text = substitute_text(step.text, recipe, ov, sid)
+    scale = ov.scale_factor
+    # Substitutions are written into the recipe itself, so ing.name is already the swap.
+    needs = [fmt_ingredient(ing.name, ing.amount * scale, ing.unit)
+             for ing in recipe.ingredients if mentions_ingredient(text, ing.name)]
+
+    bits = [f"{recipe.title} step {n} of {len(recipe.steps)}: {text}"]
+    if needs:
+        bits.append("needs " + ", ".join(needs))
+    if step.duration_s:
+        bits.append(fmt_dur(step.duration_s))
+    if ov.step_notes.get(sid):
+        bits.append("note: " + ov.step_notes[sid])
+    if behind:
+        bits.append(f"{len(behind)} earlier step(s) recorded as done")
     if finished:
-        msg_bits.append("task(s) done: " + ", ".join(finished))
-    return "state", "; ".join(msg_bits)
+        bits.append("task(s) done: " + ", ".join(finished))
+    return "state", "; ".join(bits)
 
 
 @tool(
