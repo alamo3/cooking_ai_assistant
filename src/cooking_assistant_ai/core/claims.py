@@ -136,11 +136,16 @@ _OMISSION_RULES: List[Tuple[str, "re.Pattern[str]", FrozenSet[str]]] = [
                 r"searing|baking|cooking)\b", re.I),
      frozenset({"start_task", "mark_complete", "set_timer"})),
     ("done",
+     # The verb list is open-ended by nature - a recorded cook said "I've mashed the tofu",
+     # which none of these covered - so it also accepts any past-tense verb after "I've".
      re.compile(r"\b(?:i'?ve|i have|just)\s+(?:done|finished|completed|chopped|diced|sliced|minced|seared|"
                 r"rinsed|washed|peeled|trimmed|seasoned|prepped|prepared|mixed|added|flipped|drained|"
-                r"plated|served|started|put)\b"
-                r"|\b(?:that'?s|it'?s|they'?re)\s+(?:done|finished|ready|complete)\b"
-                r"|\b(?:finished|done with)\s+(?:the\s+)?\w+", re.I),
+                r"plated|served|started|put|mashed|crumbled|grated|stirred|poured|tipped|dumped)\b"
+                r"|\b(?:i'?ve|i have)\s+\w+ed\b"
+                r"|\b(?:that'?s|it'?s|they'?re|we'?re|those are|these are)\s+(?:done|finished|ready|complete)\b"
+                r"|\b(?:finished|done with)\s+(?:the\s+)?\w+"
+                # "okay, I'm ready for the spices" says the step before them is behind us.
+                r"|\bi'?m\s+ready\s+for\b", re.I),
      frozenset({"mark_complete", "complete_prep", "start_task", "skip_step"})),
     ("skipped",
      re.compile(r"\b(?:i'?m\s+)?(?:skipping|skip|leaving out|not doing|no)\s+(?:the\s+)?step\b"
@@ -154,9 +159,15 @@ class Omission:
     kind: str
     utterance: str
     needs: FrozenSet[str]
+    # Set when the giveaway was the model's own reply rather than something the cook said,
+    # where quoting "the cook said ..." back at it would be nonsense.
+    detail: Optional[str] = None
 
     def describe(self) -> str:
-        return f'the cook said "{self.utterance.strip()}" (expected {" or ".join(sorted(self.needs))})'
+        expected = " or ".join(sorted(self.needs))
+        if self.detail:
+            return f"{self.detail} (expected {expected})"
+        return f'the cook said "{self.utterance.strip()}" (expected {expected})'
 
 
 def implied_state_change(utterance: str) -> Optional[Omission]:
@@ -177,7 +188,73 @@ def missed_state_change(utterance: str, tools_ok: Iterable[str]) -> Optional[Omi
     return omission
 
 
+# ------------------------------------------------------- walking the cook on without saying so
+#
+# The other way the plan drifts, and the one that actually happened. Over a whole recorded
+# cook of the tofu scramble the model narrated all three steps correctly and in order, and
+# called mark_complete not once, so the tablet sat on step 1 from the first word to the last.
+# Nothing was wrong with what it said; it simply never wrote down that the kitchen had moved.
+#
+# The cook-side rules above cannot catch this, because the cook never says anything that
+# implies it - the model is the one doing the advancing. What gives it away is the reply
+# itself: if it is walking the cook through a step further down the list, the steps before it
+# are done. Matching is against the recipe's own step text rather than another verb list. No
+# regex can know which step "add the nutritional yeast, kala namak, turmeric and garlic
+# powder" belongs to, but the step sharing the most words with it can.
+
+# Three shared content words, stopwords already removed. Measured on the recorded cook: the
+# replies that really did advance shared 4 to 7 with their step and at most 1 with the step
+# before it, so there is a wide gap to sit in.
+_MIN_SHARED_WORDS = 3
+
+
+def step_moved_on(utterance: str, session: Optional[Session]) -> Optional[Omission]:
+    """The model's own reply is walking the cook through a step that is not the current one.
+
+    Conservative on purpose. It requires a clear winner: the matched step must share more
+    words with the reply than the earliest step still open, so anything ambiguous is read as
+    "still on the current step" and says nothing.
+    """
+    if session is None or not utterance.strip():
+        return None
+    said = _words(utterance)
+    if not said:
+        return None
+
+    best: Optional[Tuple[int, str, int, str]] = None  # score, title, number, step id
+    for recipe in session.recipes.values():
+        overlay = session.overlays.get(recipe.id)
+        skipped = overlay.skipped_steps if overlay else set()
+        pending = [(n, s) for n, s in enumerate(recipe.steps, start=1)
+                   if s.id not in session.completed_steps and s.id not in skipped]
+        if len(pending) < 2:
+            continue  # nothing to be behind on
+        scored = [(len(_words(s.text) & said), n, s) for n, s in pending]
+        top = max(scored, key=lambda row: row[0])
+        current = scored[0]
+        if top[0] < _MIN_SHARED_WORDS or top[1] == current[1] or top[0] <= current[0]:
+            continue
+        if best is None or top[0] > best[0]:
+            best = (top[0], recipe.title, current[1], current[2].id)
+
+    if best is None:
+        return None
+    _score, title, open_n, _open_id = best
+    return Omission(
+        "advanced", utterance, frozenset({"mark_complete", "skip_step"}),
+        detail=(f"the reply walks the cook through a later step of {title} while step "
+                f"{open_n} is still open"))
+
+
 def omission_prompt(omission: Omission) -> str:
+    if omission.detail:
+        return (
+            "[SYSTEM] " + omission.describe() + ". The cook cannot see a step tick over until "
+            "it is recorded, so the tablet is still showing them the earlier one. If they are "
+            "genuinely past it, call mark_complete for the steps they have finished. If you "
+            "were only describing what is coming, or you are not sure they have done it, ask "
+            "them. Then reply to the cook as normal."
+        )
     return (
         "[SYSTEM] That turn changed nothing in the state, but " + omission.describe() + ". "
         "If the kitchen really moved on, record it now with the right tool so the plan stays "

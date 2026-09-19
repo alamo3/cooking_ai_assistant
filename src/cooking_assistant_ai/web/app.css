@@ -380,6 +380,12 @@ button.ghost { background: transparent; color: var(--muted); }
 .appl-when { font-size: 11.5px; color: var(--muted); }
 
 /* --- free: present, unlit, out of the way ------------------------------------------ */
+/* The free stations are one line under the grid rather than a row of dim tiles: a fully
+   drawn kitchen is eight to eleven of them and it was pushing the timers out of sight.
+   .appl.free is kept for the rare unowned-but-wanted card, which is still drawn. */
+.appl-idle { grid-column: 1 / -1; font-size: 11.5px; color: var(--muted);
+  padding: 2px 4px 0; letter-spacing: .02em; }
+
 .appl.free { opacity: .42; }
 .appl.free .appl-what { color: var(--muted); font-weight: 500; }
 

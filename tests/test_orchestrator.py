@@ -346,3 +346,44 @@ def test_sentence_splitter_streams_early():
     assert out == ["Put the rice on.", "Then sear the chicken for 1.5 min."]
     assert s.flush() == ["Done!"]
     assert s.feed("Add 2 tbsp. of oil now. ") == ["Add 2 tbsp. of oil now."]
+
+
+async def test_walking_the_cook_to_a_later_step_prompts_recording_the_earlier_ones(orch):
+    """A whole recorded cook advanced three steps and called mark_complete not once.
+
+    Nothing the cook said implied it - the model was the one moving them along, so the
+    giveaway has to be the reply itself, matched against the recipe's own step text.
+    """
+    o, llm, out = orch
+    llm.push(
+        "Flip the thighs now, and tuck the garlic, thyme and lemon halves around them.",
+        call("mark_complete", step_ids=["r001-s1", "r001-s2", "r001-s3"]),
+        "Marked the searing done.",
+    )
+    await o.submit("what now?")
+    await o.wait_idle()
+    assert [t.name for t in out.tools()] == ["mark_complete"]
+    assert "r001-s1" in o.session.completed_steps
+    nudges = [e for e in out.events if isinstance(e, Notice) and "drifted" in e.text]
+    assert nudges and "step 1" in nudges[0].text and "Roast Chicken Thighs" in nudges[0].text
+
+
+async def test_staying_on_the_current_step_is_not_nudged(orch):
+    o, llm, out = orch
+    llm.push("Start by preheating the oven to 425.")
+    await o.submit("what now?")
+    await o.wait_idle()
+    assert out.tools() == []
+    assert not [e for e in out.events if isinstance(e, Notice) and "drifted" in e.text]
+
+
+async def test_a_turn_that_recorded_the_step_is_not_nudged(orch):
+    """Calling mark_complete is the whole point; having done it, no nudge is due."""
+    o, llm, out = orch
+    llm.push(
+        call("mark_complete", step_ids=["r001-s1", "r001-s2", "r001-s3"]),
+        "Flip the thighs and tuck the garlic, thyme and lemon halves around them.",
+    )
+    await o.submit("done with the searing")
+    await o.wait_idle()
+    assert not [e for e in out.events if isinstance(e, Notice) and "drifted" in e.text]

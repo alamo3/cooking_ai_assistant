@@ -1042,12 +1042,22 @@
     return m < 60 ? m + "m" : Math.floor(m / 60) + "h " + (m % 60) + "m";
   }
 
+  // Only what is actually in use gets a tile. A fully drawn kitchen is eight to eleven of
+  // them, nearly all idle, and on the tablet that pushed the timers off the bottom of the
+  // right-hand column - so the board was crowding out the one thing that is genuinely
+  // time-critical. The server still reports every station, because the model reasons about
+  // free rings; this is the cook's view, not the model's.
+  const IN_USE = ["active", "due", "reserved", "needed"];
+
   function renderAppliances(rows) {
     const box = $("#appliances");
-    if (!rows || !rows.length) { box.hidden = true; box.innerHTML = ""; return; }
+    // Not named "busy": each card below already has its own busy, and a shadowed name in
+    // this file once made timers render as "12m" instead of "12:30" for a whole cook.
+    const inUse = (rows || []).filter((a) => IN_USE.includes(a.status));
+    if (!inUse.length) { box.hidden = true; box.innerHTML = ""; return; }
     box.hidden = false;
     box.innerHTML = "";
-    for (const a of rows) {
+    for (const a of inUse) {
       const card = el("div", "appl " + a.status + (a.untimed ? " untimed" : "")
                               + (a.owned === false ? " unowned" : ""));
       card.appendChild(applianceIcon(a.family));
@@ -1071,6 +1081,22 @@
       }
       if (when) card.appendChild(el("div", "appl-when", when));
       box.appendChild(card);
+    }
+
+    // What is free, as one line rather than a row of empty tiles, so the cook can still
+    // answer "is there a ring going spare?" without reading a grid.
+    const idle = (rows || []).filter((a) => !IN_USE.includes(a.status) && a.owned !== false);
+    if (idle.length) {
+      const rings = idle.filter((a) => a.family === "stovetop").length;
+      const others = idle.filter((a) => a.family !== "stovetop").map((a) => a.label.toLowerCase());
+      const bits = [];
+      if (rings) bits.push(rings === 1 ? "1 ring" : rings + " rings");
+      bits.push(...others);
+      // Capped: a well equipped kitchen idles six or seven things and the summary would
+      // wrap to the height of the tiles it replaced.
+      const shown = bits.slice(0, 4);
+      if (bits.length > shown.length) shown.push("+" + (bits.length - shown.length) + " more");
+      box.appendChild(el("div", "appl-idle", "Free: " + shown.join(", ")));
     }
   }
 
