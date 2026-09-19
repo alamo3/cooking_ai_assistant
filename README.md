@@ -589,7 +589,13 @@ kitchen.
 meat, pork, seafood, dairy, egg, honey, alcohol the ingredient really has, and which only
 some brands use.
 
-**The model may only add a warning; it never bans a dish.** Three passes over a real vegan
+**Negation is the one bit of grammar worth encoding.** The lists read "non-dairy milk" as
+milk, "flax egg" as egg and "imitation crab" as crab, and once they became the only thing
+allowed to exclude, that blocked a vegan cook's own shopping. A name containing `non-`,
+`-free`, `mock`, `imitation`, `substitute`, `replacer`, `alternative`, `plant-based` or
+`vegan` denies the thing it mentions, and inverts every term after it.
+
+**The model may clear an ingredient but never condemn one.** Three passes over a real vegan
 library produced "tofu contains meat", "flour contains meat" and "baguette contains meat",
 which would have refused the cook their own recipes. It turns out to be reliable at judging a
 sentence — prep detection was right every time — and unreliable at recalling what a product is
@@ -603,9 +609,16 @@ tofu             vegan       -> check:    may contain meat; check the label   (a
                                           annoying rather than harmful)
 ```
 
-That is the same asymmetry the rest of the system uses: surfacing costs a sentence, deciding
-wrongly costs the cook their dinner. `cooking-assistant-ai classify-steps` backfills it
-alongside the prep flags and grocery keys.
+A clearance overrides the word lists, because no list will ever hold the brands and reading
+"Oatly" or "Violife cheddar" is exactly what the model is good at. A condemnation does not,
+because recalling what a product is made of is exactly what it is bad at.
+
+In the end `classify-steps` writes only the prep flags and grocery keys. Composition was
+measured over three passes of a real library and produced "tofu contains meat", "flour
+contains meat" and "baguette contains meat" — different nonsense each time — and a wrong
+check-the-label note is the same cry-wolf noise this codebase keeps avoiding everywhere
+else. The field and the checking stay; nothing populates them until that can be done
+reliably.
 
 Every answer is matched back by the name the model echoes, and anything that does not match is
 discarded. An earlier version asked for four arrays indexed by position, and a single slip

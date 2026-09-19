@@ -226,7 +226,7 @@ async def classify_steps(args: argparse.Namespace) -> None:
 
     for recipe in store.list_recipes():
         judged = (all(s.prep is not None for s in recipe.steps)
-                  and all(i.contains is not None for i in recipe.ingredients))
+                  and all(i.key for i in recipe.ingredients))
         if not args.all and judged:
             print(f"  {recipe.id} {recipe.title}: already judged")
             continue
@@ -293,16 +293,16 @@ async def classify_steps(args: argparse.Namespace) -> None:
                 str(c).strip().lower() for c in (row.get(field) or [])
                 if str(c).strip().lower() in CATEGORIES)
             key = str(row.get("key") or "").strip().lower()
-            new_items.append(_replace(item, key=key or item.key,
-                                      contains=clean("contains"),
-                                      may_contain=clean("may_contain")))
+            # Only the key is written back. Composition was measured over three passes of a
+            # real library and produced "tofu contains meat", "flour contains meat" and
+            # "baguette contains meat": different nonsense each time. Reading a name is what
+            # the model is good at; recalling what a product is made of it is not, and a
+            # wrong check-the-label note is the cry-wolf noise this codebase keeps avoiding.
+            new_items.append(_replace(item, key=key or item.key))
 
         store.put_recipe(_replace(recipe, steps=new_steps, ingredients=tuple(new_items)))
         marks = "".join("P" if s.prep else "." for s in new_steps)
-        found = sorted({c for i in new_items for c in (i.contains or ())})
-        maybe = sorted({c for i in new_items for c in (i.may_contain or ())})
-        note = f"   contains: {', '.join(found)}" if found else ""
-        note += f"   may contain: {', '.join(maybe)}" if maybe else ""
+        note = ""
         if mismatched:
             note += f"   ({mismatched} answer(s) did not match an ingredient, skipped)"
         print(f"  {recipe.id} {recipe.title}: {marks}{note}")

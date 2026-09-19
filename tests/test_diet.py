@@ -142,10 +142,10 @@ def test_the_model_can_warn_but_never_ban():
     wrong = check_ingredient("tofu", "vegan", ("meat",))
     assert wrong is not None and wrong.severity == "check"
 
-    # the word lists keep the power to exclude, because they are precise where it is wrong
-    assert check_ingredient("chicken stock", "vegan", ()).severity == "excluded"
-    assert check_ingredient("lard", "halal", ()).severity == "excluded"
-    assert check_ingredient("olive oil", "vegan", ()) is None
+    # the word lists keep the power to exclude for anything the model has not judged
+    assert check_ingredient("chicken stock", "vegan").severity == "excluded"
+    assert check_ingredient("lard", "halal").severity == "excluded"
+    assert check_ingredient("olive oil", "vegan") is None
 
 
 def test_no_real_recipe_is_refused_by_a_model_guess(ctx):
@@ -184,3 +184,43 @@ def test_the_judgement_travels_with_the_ingredient(ctx):
     assert check_recipe(plain, "vegetarian") == []           # unjudged: the name hides it
     judged = [replace(plain[0], contains=("seafood",))]
     assert check_recipe(judged, "vegetarian"), "the stored judgement was ignored"
+
+
+# ------------------------------------------------- names that deny what they mention
+
+def test_negated_names_are_not_the_thing_they_name():
+    """The cook's complaint: non-dairy milk filtered as milk, mock eggs flagged as eggs.
+
+    Once the word lists became the only thing allowed to exclude, their blind spot about
+    negation started blocking a vegan cook's own shopping.
+    """
+    from cooking_assistant_ai.core.diet import check_ingredient
+
+    for name in ["non-dairy milk", "dairy-free milk", "milk alternative", "nondairy creamer",
+                 "egg replacer", "egg substitute", "egg-free mayo", "eggless mayonnaise",
+                 "flax egg", "chia egg", "aquafaba", "JUST Egg",
+                 "dairy free cheese", "imitation crab", "mock duck", "meat-free mince",
+                 "plant-based mince", "faux gras", "cheese-style slices"]:
+        assert check_ingredient(name, "vegan") is None, f"{name} was wrongly excluded"
+
+
+def test_the_real_thing_is_still_caught():
+    from cooking_assistant_ai.core.diet import check_ingredient
+
+    for name in ["whole milk", "milk", "eggs", "free-range eggs", "cheddar cheese",
+                 "crab", "chicken stock", "honey", "double cream"]:
+        v = check_ingredient(name, "vegan")
+        assert v is not None and v.severity == "excluded", f"{name} slipped through"
+
+
+def test_the_model_may_clear_a_name_a_word_list_cannot_know():
+    """No list will ever hold the brands. Reading a name is what the model is good at, and a
+    false clearance costs a missed warning where a false exclusion costs the cook their
+    dinner."""
+    from cooking_assistant_ai.core.diet import check_ingredient
+
+    for brand in ["Oatly barista", "Violife cheddar", "Beyond Burger", "Miyokos butter"]:
+        assert check_ingredient(brand, "vegan", ()) is None, f"{brand} was wrongly excluded"
+
+    # a clearance is only a clearance when the model actually looked
+    assert check_ingredient("Violife cheddar", "vegan") is not None   # unjudged: list wins

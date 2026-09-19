@@ -50,6 +50,21 @@ PLANT_QUALIFIERS = ("coconut", "almond", "soy", "soya", "oat", "cashew", "rice",
 NOT_MEAT_PHRASES = ("beef tomato", "beefsteak tomato", "chicken of the woods",
                     "vegetable stock", "vegetable broth", "mock", "vegetarian")
 
+# A name that denies the thing it names. The word lists read "non-dairy milk" as milk and
+# "flax egg" as egg, and once the lists became the only thing allowed to exclude, that
+# blocked a cook's own vegan recipes. Negation is the one bit of grammar worth encoding here,
+# because it inverts the meaning of every term that follows it.
+NEGATIONS = ("non-dairy", "non dairy", "nondairy", "dairy-free", "dairy free", "dairyfree",
+             "egg-free", "egg free", "eggless", "meat-free", "meat free", "meatless",
+             "free-from", "free from", "imitation", "faux", "mock", "vegan", "plant-based",
+             "plant based", "substitute", "replacer", "replacement", "alternative",
+             "-style", " style", "analogue", "analog", "not-", "no-dairy")
+
+# Plant-based egg and dairy stand-ins whose names give no other clue.
+NOT_ANIMAL_PHRASES = ("flax egg", "chia egg", "aquafaba", "just egg", "tofu scramble",
+                      "nutritional yeast", "cashew cream", "oat cream", "soy cream",
+                      "coconut yoghurt", "coconut yogurt", "nut milk", "seed milk")
+
 
 # What an ingredient actually contains, decided by the model when the recipe is imported and
 # stored on the Ingredient. The word lists below can catch "chicken stock"; they cannot know
@@ -80,8 +95,17 @@ class Violation:
     severity: str  # "excluded" | "check"
 
 
+def _denied(name: str) -> bool:
+    """True when the name itself says it is not the animal product it mentions."""
+    low = name.lower()
+    return (any(p in low for p in NEGATIONS)
+            or any(p in low for p in NOT_ANIMAL_PHRASES))
+
+
 def _has(name: str, terms: Tuple[str, ...]) -> Optional[str]:
     low = name.lower()
+    if _denied(low):
+        return None
     for phrase in NOT_MEAT_PHRASES:
         if phrase in low:
             return None
@@ -93,7 +117,7 @@ def _has(name: str, terms: Tuple[str, ...]) -> Optional[str]:
 
 def _plant_based(name: str) -> bool:
     low = name.lower()
-    return any(q in low for q in PLANT_QUALIFIERS)
+    return any(q in low for q in PLANT_QUALIFIERS) or _denied(low)
 
 
 def check_known(name: str, contains: Tuple[str, ...], diet: str,
@@ -134,6 +158,13 @@ def check_ingredient(name: str, diet: str, contains: Optional[Tuple[str, ...]] =
     # recipes. It is good at judging a sentence and unreliable at recalling what a product is
     # made of, so the word lists below - which are precise, if narrow - keep the power to
     # exclude, and anything the model raises becomes a check-the-label note.
+    # A clearance overrides the word lists; a condemnation does not. That is the asymmetry the
+    # measurements support: the model is reliable at reading a name ("non-dairy milk is not
+    # dairy", "Oatly is oat milk") and unreliable at recalling what a product is made of (it
+    # claimed tofu contains meat). No word list will ever know the brands, and a false
+    # clearance costs a missed warning where a false exclusion costs the cook their dinner.
+    if contains is not None and not contains and not may_contain:
+        return None
     advisory = None
     if contains is not None or may_contain is not None:
         found = check_known(name, contains or (), diet, may_contain or ())
