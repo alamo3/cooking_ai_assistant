@@ -30,6 +30,9 @@
   <div class="server-row"><span>Backend</span><b id="srv-backend">-</b></div>
   <div id="srv-changed" class="server-changed" hidden></div>
   <div id="srv-warn" class="server-warn" hidden></div>
+  <label class="server-row proactivity">Proactivity
+    <input id="proactivity" type="range" min="0" max="1" step="0.1" value="0.5">
+  </label>
   <div class="server-actions">
     <button id="srv-restart" class="small">Restart server</button>
     <button id="srv-close" class="small ghost">Close</button>
@@ -98,9 +101,13 @@
       <div id="step-also" class="step-also" hidden></div>
     </section>
     <div id="conversation" class="conversation"></div>
-    <div class="controls">
-      <button id="listen-toggle" class="listen" disabled>Always listening: off</button>
-      <button id="ptt" class="ptt" disabled>Hold to talk</button>
+    <div class="controls compact">
+      <button id="ptt" class="ptt" disabled title="Hold to talk">
+        <span class="ptt-mic" aria-hidden="true">&#127908;</span><span class="ptt-label">Hold to talk</span>
+      </button>
+      <button id="listen-toggle" class="listen" disabled title="Always listening">
+        <span class="listen-dot" aria-hidden="true"></span><span id="listen-label">Listen</span>
+      </button>
       <form id="text-form" class="text-form">
         <input id="text-input" placeholder="or type here" autocomplete="off">
         <button class="small">Send</button>
@@ -117,9 +124,6 @@
     <h2>Timeline</h2>
     <div id="timeline" class="timeline"></div>
     <div id="conflicts" class="conflicts"></div>
-    <label class="proactivity">Proactivity
-      <input id="proactivity" type="range" min="0" max="1" step="0.1" value="0.5">
-    </label>
   </section>
 </main>
 

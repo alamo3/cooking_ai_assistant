@@ -297,7 +297,23 @@ input:focus, select:focus { outline: none; border-color: var(--accent);
 .timeline tr.complete td { color: var(--muted); text-decoration: line-through; }
 .timeline .win { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .conflicts { color: var(--bad); font-size: 15px; margin-top: 10px; }
-.proactivity { margin-top: auto; padding-top: 14px; color: var(--muted); font-size: 15px; display: flex; flex-direction: column; gap: 6px; }
+/* Lives in the server panel now: a dial nobody has ever moved does not earn a permanent
+   place next to the plan. */
+.proactivity { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; }
+.proactivity input { flex: 1; }
+
+/* One row, not three stacked slabs. "Hold to talk" stays the biggest thing here because it
+   is pressed with a wet hand, but it does not need to be the height of a recipe step. */
+.controls.compact { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+.controls.compact .ptt { display: inline-flex; align-items: center; justify-content: center;
+  gap: 9px; padding: 12px 18px; font-size: 16px; font-weight: 600; border-radius: 12px; }
+.controls.compact .ptt-mic { font-size: 17px; line-height: 1; }
+.controls.compact .listen { display: inline-flex; align-items: center; gap: 7px;
+  padding: 12px 14px; font-size: 13px; border-radius: 12px; }
+.listen-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted);
+  box-shadow: none; transition: background .2s, box-shadow .2s; }
+.listen.on .listen-dot { background: var(--user); box-shadow: 0 0 7px var(--user); }
+.controls.compact .text-form { grid-column: 1 / -1; }
 
 /* pantry */
 .pantry { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
@@ -531,34 +547,86 @@ button.ghost { background: transparent; color: var(--muted); }
 .unresolved-item b { color: var(--text); font-weight: 600; }
 
 /* ---------------------------------------------------------------- timeline
-   Lanes of equipment down, time across, a bar per task coloured by dish. The table this
-   replaced said the same things in words and went unread for weeks: the useful fact in a
-   plan is that two pans overlap and where the gap is, and that is a shape. */
-.gantt { position: relative; display: grid; gap: 5px; --lane-w: 74px; margin-bottom: 6px; }
-.gantt-row { display: grid; grid-template-columns: var(--lane-w) 1fr; align-items: center; gap: 8px; }
-.gantt-lane { font-size: 11px; color: var(--muted); text-align: right; letter-spacing: .02em;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gantt-track { position: relative; height: 26px; background: var(--panel-2);
-  border-radius: 7px; overflow: hidden; }
-.gantt-bar { position: absolute; top: 3px; bottom: 3px; border-radius: 5px;
-  background: hsl(var(--hue) 62% 42%); border: 1px solid hsl(var(--hue) 62% 55%);
-  display: flex; align-items: center; padding: 0 6px; min-width: 6px; overflow: hidden; }
-.gantt-label { font-size: 10.5px; color: #fff; white-space: nowrap; overflow: hidden;
-  text-overflow: ellipsis; }
-.gantt-bar.active { background: hsl(var(--hue) 75% 48%); border-color: hsl(var(--hue) 85% 68%);
-  box-shadow: 0 0 0 1px hsl(var(--hue) 85% 68% / .55); }
-.gantt-bar.complete { background: hsl(var(--hue) 20% 26%); border-color: hsl(var(--hue) 18% 34%); }
-.gantt-bar.complete .gantt-label { color: var(--muted); text-decoration: line-through; }
-.gantt-bar.skipped { opacity: .4; }
+   One line, events pinned along it in the order they happen, each leading to the next, the
+   way a historical timeline is drawn. The Gantt chart this replaced was a project plan: lanes
+   of equipment with proportional bars, which in a 300px column truncated every label to
+   "chi..." and "ud...". Laid out in pixels per minute so an hour always looks like an hour;
+   the track scrolls rather than squashing. */
+.tl-scroll { overflow-x: auto; overflow-y: hidden; padding: 4px 0 2px; }
+.tl-scroll::-webkit-scrollbar { height: 7px; }
+.tl-scroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+.tl-track { position: relative; height: 216px; min-width: 100%; }
 
-/* Now, over every lane. The one line the cook is actually looking for. */
-.gantt-now { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--accent);
-  box-shadow: 0 0 6px var(--accent); pointer-events: none; }
+/* The line itself, dead centre, with the run of each task drawn along it. */
+.tl-spine { position: absolute; left: 0; right: 0; top: 50%; height: 2px;
+  background: var(--line); border-radius: 2px; }
+.tl-run { position: absolute; top: 50%; height: 6px; margin-top: -3px; border-radius: 4px;
+  background: hsl(var(--hue) 60% 44%); opacity: .85; }
+.tl-run.active { background: hsl(var(--hue) 80% 52%); box-shadow: 0 0 8px hsl(var(--hue) 80% 52% / .6); }
+.tl-run.complete { background: hsl(var(--hue) 14% 30%); opacity: .7; }
 
-.gantt-axis { display: flex; justify-content: space-between; font-size: 10.5px;
-  color: var(--muted); padding-left: 82px; }
-.gantt-key { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 11px;
+/* The moment itself. */
+.tl-dot { position: absolute; top: 50%; width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px;
+  border-radius: 50%; background: hsl(var(--hue) 62% 50%);
+  border: 2px solid var(--panel); box-shadow: 0 0 0 1.5px hsl(var(--hue) 62% 50%); z-index: 2; }
+.tl-dot.active { background: hsl(var(--hue) 85% 58%);
+  box-shadow: 0 0 0 1.5px hsl(var(--hue) 85% 58%), 0 0 10px hsl(var(--hue) 85% 58% / .8); }
+.tl-dot.complete { background: var(--panel-2); box-shadow: 0 0 0 1.5px var(--line); }
+
+/* The stalk leans when a card had to slide right to avoid its neighbour, so the dot always
+   stays on the true time. */
+.tl-stalk { position: absolute; height: 22px; border-top: 2px dotted hsl(var(--hue) 45% 45%);
+  opacity: .8; }
+.tl-stalk.up { top: calc(50% - 24px); }
+.tl-stalk.down { top: calc(50% + 2px); }
+
+.tl-event { position: absolute; width: 108px; padding: 7px 9px; border-radius: 10px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-left: 3px solid hsl(var(--hue) 62% 50%); }
+.tl-event.up { bottom: calc(50% + 24px); }
+.tl-event.down { top: calc(50% + 24px); }
+.tl-event.active { border-color: hsl(var(--hue) 80% 58%);
+  box-shadow: 0 0 0 1px hsl(var(--hue) 80% 58% / .45); }
+.tl-event.complete { opacity: .55; }
+.tl-event.complete .tl-what { text-decoration: line-through; }
+.tl-when { font-size: 11px; font-weight: 700; color: hsl(var(--hue) 62% 62%); letter-spacing: .02em; }
+.tl-what { font-size: 12.5px; color: var(--text); line-height: 1.25; margin-top: 1px; }
+.tl-where { display: flex; align-items: center; gap: 4px; font-size: 10.5px;
+  color: var(--muted); margin-top: 3px; }
+.tl-where .appl-icon { width: 15px; height: 15px; margin: 0; flex: 0 0 auto; }
+
+/* Now, over everything. */
+.tl-now { position: absolute; top: 4px; bottom: 4px; width: 2px; background: var(--accent);
+  box-shadow: 0 0 7px var(--accent); z-index: 3; }
+.tl-now-pill { position: absolute; top: -3px; left: 4px; font-size: 9.5px; font-weight: 700;
+  letter-spacing: .07em; text-transform: uppercase; color: var(--accent); }
+
+.tl-key { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 11px;
   color: var(--muted); }
-.gantt-key-item { display: inline-flex; align-items: center; gap: 5px; }
-.gantt-key-item i { width: 9px; height: 9px; border-radius: 3px; display: inline-block;
-  background: hsl(var(--hue) 62% 48%); }
+.tl-key-item { display: inline-flex; align-items: center; gap: 5px; }
+.tl-key-item i { width: 9px; height: 9px; border-radius: 3px; display: inline-block;
+  background: hsl(var(--hue) 62% 50%); }
+
+/* Progress as steps, not a fraction. "4/9" says how many; a row of dots says which, and each
+   one is a target the cook can tap when the model has not kept up. */
+.dots { display: flex; flex-wrap: wrap; gap: 4px; margin: 7px 0 2px; }
+.dot { width: 24px; height: 24px; border-radius: 50%; font-size: 11px; font-weight: 600;
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+  background: var(--panel-2); color: var(--muted); border: 1px solid var(--line);
+  padding: 0; transition: background .15s, border-color .15s, color .15s; }
+.dot.done { background: hsl(var(--hue) 55% 38%); border-color: hsl(var(--hue) 55% 48%);
+  color: #fff; cursor: default; }
+.dot.here { border-color: hsl(var(--hue) 75% 60%); color: hsl(var(--hue) 75% 72%);
+  box-shadow: 0 0 0 2px hsl(var(--hue) 75% 60% / .3); }
+.dot.skipped { opacity: .45; text-decoration: line-through; cursor: default; }
+.dot:not(.done):not(.skipped):hover { border-color: var(--accent); color: var(--accent); }
+
+/* Missing ingredients as the same tiles the step panel uses. An ingredient should look the
+   same wherever it turns up, so the cook recognises it rather than reading it. */
+.gap-tiles { display: flex; flex-wrap: wrap; gap: 7px; margin: 8px 0 4px; }
+.gap { display: inline-flex; align-items: center; gap: 8px; padding: 6px 11px 6px 9px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 11px; }
+.gap-icon { font-size: 21px; line-height: 1; }
+.gap-body { display: flex; flex-direction: column; line-height: 1.2; }
+.gap-name { font-size: 13px; font-weight: 600; color: var(--text); }
+.gap-swap { font-size: 11px; color: var(--accent); }

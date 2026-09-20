@@ -96,8 +96,11 @@ class Report:
         return {
             "ok": self.ok,
             "checked": self.checked,
+            # key rides along so the tablet can draw the same glyph it uses everywhere else
+            # for this ingredient, rather than a second guess from the display name.
             "missing": [{"recipe_id": g.recipe_id, "recipe": g.recipe_title,
-                         "name": g.need.name, "text": g.need.shortfall_text(),
+                         "name": g.need.name, "key": g.need.key,
+                         "text": g.need.shortfall_text(),
                          "staple": g.staple, "swaps": g.swaps}
                         for g in self.gaps],
         }

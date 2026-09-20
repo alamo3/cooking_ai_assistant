@@ -1,14 +1,16 @@
-"""The timeline is a picture now, so the picture is what gets checked.
+"""The timeline is a picture, so the picture is what gets checked.
 
-It was a four-column text table that went unread for weeks. The useful fact in a plan is that
-two pans overlap and where the gap is, and that is a shape rather than a column of times.
+It began as a four-column text table nobody read, became a Gantt chart - lanes of equipment
+with proportional bars, which is a project plan and truncated every label to "chi..." in a
+narrow column - and is now a timeline proper: one line, events pinned along it in the order
+they happen, each leading to the next.
+
 These run the page's own renderTimeline in a JS engine and assert on the geometry it produced,
 because there is no browser here and a wrong bar is invisible in a diff.
 """
 from __future__ import annotations
 
 import json
-from datetime import datetime
 
 import pytest
 
@@ -28,6 +30,11 @@ function el(tag, cls, text) {
            style: { setProperty: function (k, v) { this[k] = v; } },
            appendChild: function (c) { this.children.push(c); } };
 }
+function requestAnimationFrame(f) {}
+function applianceIcon(family) {
+  return { tag: "svg", cls: "appl-icon", text: "", children: [], family: family,
+           style: { setProperty: function () {} }, appendChild: function () {} };
+}
 var document = { createTextNode: function (t) {
   return { tag: "#text", cls: "", text: t, children: [] }; } };
 function fmtTime(iso) {
@@ -40,34 +47,35 @@ function fmtWindow(a, b) { return fmtTime(a) + "-" + fmtTime(b); }
 var app = { state: __STATE__ };
 __CODE__
 renderTimeline(app.state.timeline);
-var rows = [], nowline = null, axis = [], key = [];
-(stub["#timeline"].children || []).forEach(function (c) {
-  (c.children || []).forEach(function (g) {
-    if (g.cls === "gantt-now") nowline = g.style.left;
-    if ((g.cls || "").indexOf("gantt-row") === 0) {
-      rows.push({ lane: g.children[0].text,
-                  bars: (g.children[1].children || []).map(function (b) {
-                    return { label: b.children[0] ? b.children[0].text : "",
-                             left: parseFloat(b.style.left), width: parseFloat(b.style.width),
-                             cls: b.cls, hue: b.style["--hue"] }; }) });
-    }
-  });
-  if (c.cls === "gantt-axis") axis = c.children.map(function (x) { return x.text; });
-  if (c.cls === "gantt-key") key = c.children.map(function (x) {
-    return { hue: x.children[0].style["--hue"],
-             dish: x.children[1] ? x.children[1].text : "" }; });
-});
-JSON.stringify({ rows: rows, now: nowline, axis: axis, key: key,
-                 empty: (stub["#timeline"].children || []).some(function (c) {
-                   return c.cls === "empty"; }) });
+var out = { events: [], dots: [], runs: [], stalks: [], now: null, key: [], empty: false };
+function scan(node) {
+  var c = node.cls || "";
+  if (c.indexOf("tl-event") === 0) out.events.push({
+    left: parseFloat(node.style.left), cls: c,
+    when: node.children[0].text, what: node.children[1].text,
+    where: node.children[2] ? node.children[2].children.map(function (x) {
+      return x.family || x.text || ""; }).join(" ") : "",
+    hue: node.style["--hue"] });
+  if (c.indexOf("tl-dot") === 0) out.dots.push({ left: parseFloat(node.style.left), cls: c });
+  if (c.indexOf("tl-run") === 0) out.runs.push({ left: parseFloat(node.style.left),
+      width: parseFloat(node.style.width), cls: c });
+  if (c.indexOf("tl-stalk") === 0) out.stalks.push({ left: parseFloat(node.style.left),
+      width: parseFloat(node.style.width), cls: c });
+  if (c === "tl-now") out.now = parseFloat(node.style.left);
+  if (c === "tl-key-item") out.key.push(node.children[1] ? node.children[1].text : "");
+  if (c === "empty") out.empty = true;
+  (node.children || []).forEach(scan);
+}
+(stub["#timeline"].children || []).forEach(scan);
+JSON.stringify(out);
 """
 
 
-def draw(session, store, now):
+def draw(ctx):
     dukpy = pytest.importorskip("dukpy")
     src = open("src/cooking_assistant_ai/web/app.js", encoding="utf-8").read()
     code = src[src.index("  const DISH_HUES = ["):src.index("  async function renderChoices() {")]
-    state = state_dict(session, now, store)
+    state = state_dict(ctx.session, ctx.clock.now(), ctx.store)
     js = HARNESS.replace("__STATE__", json.dumps(state)).replace("__CODE__", code)
     return json.loads(dukpy.evaljs(js))
 
@@ -87,68 +95,86 @@ def planned(ctx, prepped):
     return ctx
 
 
-def test_each_piece_of_equipment_gets_its_own_lane(planned):
-    out = draw(planned.session, planned.store, planned.clock.now())
-    lanes = [r["lane"] for r in out["rows"]]
-    assert lanes == sorted(lanes)                 # stable order, no jumping about
-    assert all(l.startswith("Burner") for l in lanes)
-    assert len(lanes) == 2                        # two pans, two burners
+def by_label(out):
+    return {e["what"]: e for e in out["events"]}
 
 
-def test_a_bar_sits_where_its_task_does(planned):
-    out = draw(planned.session, planned.store, planned.clock.now())
-    bars = [b for r in out["rows"] for b in r["bars"]]
-    assert {b["label"] for b in bars} == {"sear thighs", "rice boil", "rice simmer"}
-    for b in bars:
-        assert 0 <= b["left"] <= 100 and b["width"] > 0
-        assert b["left"] + b["width"] <= 100.5
+def test_every_task_becomes_an_event_on_the_line(planned):
+    out = draw(planned)
+    assert set(by_label(out)) == {"sear thighs", "rice boil", "rice simmer"}
+    assert len(out["dots"]) == 3 and len(out["runs"]) == 3
 
 
-def test_the_longer_task_draws_the_longer_bar(planned):
-    out = draw(planned.session, planned.store, planned.clock.now())
-    by = {b["label"]: b for r in out["rows"] for b in r["bars"]}
-    assert by["rice simmer"]["width"] > by["rice boil"]["width"] > by["sear thighs"]["width"]
+def test_events_run_left_to_right_in_the_order_they_happen(planned):
+    out = draw(planned)
+    assert out["dots"] == sorted(out["dots"], key=lambda d: d["left"])
+    assert all(d["left"] >= 0 for d in out["dots"])
 
 
-def test_tasks_chained_after_one_another_do_not_overlap(planned):
-    out = draw(planned.session, planned.store, planned.clock.now())
-    by = {b["label"]: b for r in out["rows"] for b in r["bars"]}
-    boil, simmer = by["rice boil"], by["rice simmer"]
-    assert simmer["left"] >= boil["left"] + boil["width"] - 0.1
+def test_how_long_a_task_runs_is_drawn_on_the_line(planned):
+    out = draw(planned)
+    runs = sorted(out["runs"], key=lambda r: r["width"])
+    # 5 min sear, 10 min boil, 15 min simmer, at a fixed pixels-per-minute
+    assert runs[0]["width"] < runs[1]["width"] < runs[2]["width"]
+    assert runs[1]["width"] == pytest.approx(runs[0]["width"] * 2, rel=0.01)
 
 
-def test_a_dish_keeps_one_colour_across_its_tasks(planned):
-    out = draw(planned.session, planned.store, planned.clock.now())
-    by = {b["label"]: b for r in out["rows"] for b in r["bars"]}
-    assert by["rice boil"]["hue"] == by["rice simmer"]["hue"]
-    assert by["sear thighs"]["hue"] != by["rice boil"]["hue"]
-    assert len(out["key"]) == 2 and all(k["dish"] for k in out["key"])
+def test_cards_alternate_above_and_below_the_line(planned):
+    """That is how a historical timeline keeps its labels apart."""
+    out = draw(planned)
+    sides = ["up" if "up" in e["cls"] else "down" for e in out["events"]]
+    assert sides == ["up", "down", "up"]
 
 
-def test_a_started_task_is_drawn_as_running(planned):
-    # start_task refuses a task whose prep is outstanding, which is the point of that gate;
-    # assert the dispatch rather than assuming it, or this tests nothing.
-    assert dispatch(planned, "mark_complete",
-                    {"step_ids": ["r001-s1", "r001-s2"]}).ok
+def test_a_card_only_slides_when_its_own_side_is_crowded(planned):
+    """Counting both sides together cascaded: every card ended up evenly spaced and none of
+    them anywhere near its own time."""
+    out = draw(planned)
+    dots = sorted(d["left"] for d in out["dots"])
+    cards = sorted(e["left"] for e in out["events"])
+    # the first two are opposite each other, so neither needs to move
+    assert cards[0] == dots[0]
+    assert cards[1] == dots[1]
+    # and nothing is ever dragged left of its own moment
+    assert all(c >= d - 0.01 for c, d in zip(cards, dots))
+
+
+def test_the_dot_stays_on_the_true_time_when_a_card_slides(planned):
+    out = draw(planned)
+    leaning = [s for s in out["stalks"] if s["width"] > 0]
+    for stalk in leaning:
+        assert any(abs(d["left"] - stalk["left"]) < 0.01 for d in out["dots"])
+
+
+def test_a_dish_keeps_one_colour(planned):
+    out = draw(planned)
+    ev = by_label(out)
+    assert ev["rice boil"]["hue"] == ev["rice simmer"]["hue"]
+    assert ev["sear thighs"]["hue"] != ev["rice boil"]["hue"]
+    assert len(out["key"]) == 2 and all(out["key"])
+
+
+def test_each_event_says_when_and_where(planned):
+    out = draw(planned)
+    for e in out["events"]:
+        assert e["when"].endswith("AM") or e["when"].endswith("PM")
+        assert "Burner" in e["where"]
+        assert "stovetop" in e["where"]          # the drawn appliance icon rides along
+
+
+def test_a_running_task_is_drawn_as_running(planned):
+    assert dispatch(planned, "mark_complete", {"step_ids": ["r001-s1", "r001-s2"]}).ok
     assert dispatch(planned, "start_task", {"task_id": "sear thighs"}).ok
-    out = draw(planned.session, planned.store, planned.clock.now())
-    by = {b["label"]: b for r in out["rows"] for b in r["bars"]}
-    assert "active" in by["sear thighs"]["cls"]
-    assert "active" not in by["rice boil"]["cls"]
+    out = draw(planned)
+    assert "active" in by_label(out)["sear thighs"]["cls"]
+    assert "active" not in by_label(out)["rice boil"]["cls"]
 
 
-def test_the_axis_reads_in_the_cook_s_own_clock(planned):
-    """It briefly showed 11:08 PM for a 7:08 PM plan, from a needless round-trip via UTC."""
-    out = draw(planned.session, planned.store, planned.clock.now())
-    assert out["axis"] and all(x.endswith("AM") or x.endswith("PM") for x in out["axis"])
-    assert out["axis"][0].startswith("6:")        # the fixture clock is 6:30 PM
-
-
-def test_now_is_marked_across_the_lanes(planned):
-    out = draw(planned.session, planned.store, planned.clock.now())
-    assert out["now"] and "calc(" in out["now"]
+def test_now_is_marked(planned):
+    out = draw(planned)
+    assert out["now"] is not None and out["now"] >= 0
 
 
 def test_an_empty_plan_says_so_rather_than_drawing_nothing(ctx):
-    out = draw(ctx.session, ctx.store, ctx.clock.now())
-    assert out["empty"] and not out["rows"]
+    out = draw(ctx)
+    assert out["empty"] and not out["events"]
