@@ -235,8 +235,9 @@ async def classify_steps(args: argparse.Namespace) -> None:
             "steps": {"type": "array", "items": {
                 "type": "object",
                 "properties": {"n": {"type": "integer"}, "prep": {"type": "boolean"},
-                               "uses": {"type": "array", "items": {"type": "integer"}}},
-                "required": ["n", "prep", "uses"]}},
+                               "uses": {"type": "array", "items": {"type": "integer"}},
+                               "seconds": {"type": "integer"}},
+                "required": ["n", "prep", "uses", "seconds"]}},
             "ingredients": {"type": "array", "items": {
                 "type": "object",
                 "properties": {"n": {"type": "integer"}, "name": {"type": "string"},
@@ -322,7 +323,11 @@ async def classify_steps(args: argparse.Namespace) -> None:
                 "list, empty when none. Go by what the step does, not by whether it repeats "
                 "the ingredient's exact words: 'mash the block of tofu' uses the firm tofu, "
                 "'season with salt' uses the kala namak. An ingredient handled in several "
-                "steps belongs to each of them.\n\n"
+                "steps belongs to each of them.\n"
+                "seconds: how long this step really takes, hands-on and hands-off "
+                "together. Use the time the recipe states; where it states none, "
+                "estimate honestly - chopping an onion 120, bringing a pan to heat "
+                "180, a covered simmer until tender 1200, resting 600. Never 0.\n\n"
                 f"{step_lines}"}], json_schema=recipe_schema))
         except ValueError:
             print(f"  {recipe.id} {recipe.title}: unreadable answer, left alone")
@@ -332,7 +337,7 @@ async def classify_steps(args: argparse.Namespace) -> None:
         # prep: the model reads the sentence and nothing matches words. It was never asked
         # before, so every imported recipe had none - and mass prep is grouped by exactly
         # this field, which is why chopping was never batched across dishes.
-        by_n, uses_n = {}, {}
+        by_n, uses_n, secs_n = {}, {}, {}
         for row in answer.get("steps") or []:
             if not isinstance(row, dict) or not isinstance(row.get("n"), int):
                 continue
@@ -340,9 +345,17 @@ async def classify_steps(args: argparse.Namespace) -> None:
             picked = [recipe.ingredients[i - 1].id for i in (row.get("uses") or [])
                       if isinstance(i, int) and 1 <= i <= len(recipe.ingredients)]
             uses_n[row["n"]] = tuple(dict.fromkeys(picked))
+            secs = row.get("seconds")
+            if isinstance(secs, int) and 0 < secs <= 6 * 3600:
+                secs_n[row["n"]] = secs
+        # A page that never says how long a step takes leaves duration_s null, and add_task
+        # refuses a task it cannot place on a timeline - so three whole recipes could not be
+        # planned at all. The estimate only fills a gap; a time the recipe itself gave is
+        # never overwritten.
         new_steps = tuple(
             _replace(s, prep=by_n.get(n, s.prep),
-                     ingredient_ids=uses_n.get(n) or s.ingredient_ids)
+                     ingredient_ids=uses_n.get(n) or s.ingredient_ids,
+                     duration_s=s.duration_s or secs_n.get(n))
             if n in by_n else s
             for n, s in enumerate(recipe.steps, start=1))
 
@@ -413,8 +426,9 @@ async def classify_steps(args: argparse.Namespace) -> None:
             note += f"   ({len(flagged)} re-asked, {demoted} demoted on disagreement)"
         if mismatched:
             note += f"   ({mismatched} answer(s) did not match, skipped)"
+        timed = sum(1 for s in new_steps if s.duration_s)
         print(f"  {recipe.id} {recipe.title}: {marks}  "
-              f"{linked}/{len(new_steps)} linked{note}")
+              f"{linked}/{len(new_steps)} linked, {timed}/{len(new_steps)} timed{note}")
 
     close = getattr(llm, "aclose", None)
     if close:

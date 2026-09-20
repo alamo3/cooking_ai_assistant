@@ -529,3 +529,36 @@ button.ghost { background: transparent; color: var(--muted); }
   text-transform: uppercase; margin-bottom: 6px; }
 .unresolved-item { font-size: 13px; color: var(--muted); line-height: 1.35; margin-top: 5px; }
 .unresolved-item b { color: var(--text); font-weight: 600; }
+
+/* ---------------------------------------------------------------- timeline
+   Lanes of equipment down, time across, a bar per task coloured by dish. The table this
+   replaced said the same things in words and went unread for weeks: the useful fact in a
+   plan is that two pans overlap and where the gap is, and that is a shape. */
+.gantt { position: relative; display: grid; gap: 5px; --lane-w: 74px; margin-bottom: 6px; }
+.gantt-row { display: grid; grid-template-columns: var(--lane-w) 1fr; align-items: center; gap: 8px; }
+.gantt-lane { font-size: 11px; color: var(--muted); text-align: right; letter-spacing: .02em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gantt-track { position: relative; height: 26px; background: var(--panel-2);
+  border-radius: 7px; overflow: hidden; }
+.gantt-bar { position: absolute; top: 3px; bottom: 3px; border-radius: 5px;
+  background: hsl(var(--hue) 62% 42%); border: 1px solid hsl(var(--hue) 62% 55%);
+  display: flex; align-items: center; padding: 0 6px; min-width: 6px; overflow: hidden; }
+.gantt-label { font-size: 10.5px; color: #fff; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.gantt-bar.active { background: hsl(var(--hue) 75% 48%); border-color: hsl(var(--hue) 85% 68%);
+  box-shadow: 0 0 0 1px hsl(var(--hue) 85% 68% / .55); }
+.gantt-bar.complete { background: hsl(var(--hue) 20% 26%); border-color: hsl(var(--hue) 18% 34%); }
+.gantt-bar.complete .gantt-label { color: var(--muted); text-decoration: line-through; }
+.gantt-bar.skipped { opacity: .4; }
+
+/* Now, over every lane. The one line the cook is actually looking for. */
+.gantt-now { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--accent);
+  box-shadow: 0 0 6px var(--accent); pointer-events: none; }
+
+.gantt-axis { display: flex; justify-content: space-between; font-size: 10.5px;
+  color: var(--muted); padding-left: 82px; }
+.gantt-key { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-size: 11px;
+  color: var(--muted); }
+.gantt-key-item { display: inline-flex; align-items: center; gap: 5px; }
+.gantt-key-item i { width: 9px; height: 9px; border-radius: 3px; display: inline-block;
+  background: hsl(var(--hue) 62% 48%); }

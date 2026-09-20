@@ -681,37 +681,96 @@
     }
   }
 
+  // A timeline you can read at a glance instead of a table nobody read. One lane per piece
+  // of equipment, time running left to right, a bar per task coloured by dish, and a line
+  // for now. The table said the same things in words; the point of a plan is seeing that two
+  // pans overlap and where the gap is, which is a shape, not a column of times.
+  const DISH_HUES = [28, 190, 140, 330, 265, 95];
+
+  function dishHue(recipeId, order) {
+    const n = order.indexOf(recipeId);
+    return DISH_HUES[(n < 0 ? 0 : n) % DISH_HUES.length];
+  }
+
+  function laneName(appliance) {
+    if (!appliance) return "Anywhere";
+    const [family, ring] = appliance.split(":");
+    if (family === "stovetop") return ring ? "Burner " + ring : "Hob";
+    return family.replace("_", " ").replace(/^./, (c) => c.toUpperCase());
+  }
+
   function renderTimeline(tl) {
     const box = $("#timeline");
     box.innerHTML = "";
-    if (!tl.tasks.length) {
-      box.appendChild(el("div", "empty", "No plan yet. Pick recipes on the Recipes tab."));
-    } else {
-      const table = el("table");
-      const head = el("tr");
-      for (const h of ["Task", "When", "Where", "Status"]) head.appendChild(el("th", null, h));
-      table.appendChild(head);
-      const order = { active: 0, pending: 1, complete: 2, skipped: 3 };
-      const tasks = [...tl.tasks].sort((a, b) => (order[a.status] - order[b.status]) || ((a.start_at || "") < (b.start_at || "") ? -1 : 1));
-      for (const t of tasks) {
-        const tr = el("tr", t.status);
-        tr.appendChild(el("td", null, t.label));
-        tr.appendChild(el("td", "win", fmtWindow(t.start_at, t.end_at)));
-        tr.appendChild(el("td", null, t.appliance ? t.appliance.replace("_", " ") + (t.temp_f ? ` ${t.temp_f}°` : "") : ""));
-        tr.appendChild(el("td", null, t.status));
-        table.appendChild(tr);
-      }
-      box.appendChild(table);
-    }
     $("#conflicts").textContent = tl.conflicts.length ? "Conflicts: " + tl.conflicts.join("; ") : "";
-  }
+    const placed = (tl.tasks || []).filter((t) => t.start_at && t.end_at);
+    if (!placed.length) {
+      box.appendChild(el("div", "empty", "No plan yet. Pick recipes on the Recipes tab."));
+      return;
+    }
 
-  async function uiTool(method, path, body) {
-    try { await api(method, path, body); } catch (e) { toast(e.message, true); }
-  }
+    const now = app.state && app.state.now ? new Date(app.state.now) : new Date();
+    const times = placed.flatMap((t) => [new Date(t.start_at), new Date(t.end_at)]);
+    let from = new Date(Math.min(...times, now));
+    let to = new Date(Math.max(...times, now));
+    const span = Math.max(to - from, 60000);
+    const pct = (d) => (100 * (new Date(d) - from)) / span;
 
-  // ------------------------------------------------------------ recipe selection screen
-  const choice = { selected: new Set(), library: [] };
+    // Lanes in a fixed order so they do not jump about as tasks come and go.
+    const lanes = [];
+    for (const t of placed) {
+      const name = laneName(t.appliance);
+      if (!lanes.includes(name)) lanes.push(name);
+    }
+    lanes.sort();
+
+    const order = [...new Set(placed.map((t) => t.recipe_id))];
+    const chart = el("div", "gantt");
+
+    for (const lane of lanes) {
+      const row = el("div", "gantt-row");
+      row.appendChild(el("div", "gantt-lane", lane));
+      const track = el("div", "gantt-track");
+      for (const t of placed.filter((x) => laneName(x.appliance) === lane)) {
+        const bar = el("div", "gantt-bar " + t.status);
+        const left = pct(t.start_at);
+        const width = Math.max(pct(t.end_at) - left, 1.5);
+        bar.style.left = left + "%";
+        bar.style.width = width + "%";
+        const hue = dishHue(t.recipe_id, order);
+        bar.style.setProperty("--hue", hue);
+        bar.title = `${t.label}  ${fmtWindow(t.start_at, t.end_at)}`;
+        bar.appendChild(el("span", "gantt-label", t.label));
+        track.appendChild(bar);
+      }
+      row.appendChild(track);
+      chart.appendChild(row);
+    }
+
+    // The now line sits over every lane, which is the whole reason to draw this.
+    const marker = el("div", "gantt-now");
+    marker.style.left = `calc(var(--lane-w) + (100% - var(--lane-w)) * ${pct(now) / 100})`;
+    chart.appendChild(marker);
+
+    const axis = el("div", "gantt-axis");
+    axis.appendChild(el("span", null, fmtTime(from)));
+    axis.appendChild(el("span", null, fmtTime(to)));
+    box.appendChild(chart);
+    box.appendChild(axis);
+
+    // A key, so a colour means a dish rather than decoration.
+    const key = el("div", "gantt-key");
+    for (const rid of order) {
+      const dish = (app.state.progress.recipes.find((r) => r.id === rid) || {}).title || rid;
+      const item = el("span", "gantt-key-item");
+      const dot = el("i");
+      dot.style.setProperty("--hue", dishHue(rid, order));
+      item.appendChild(dot);
+      item.appendChild(document.createTextNode(dish));
+      key.appendChild(item);
+    }
+    box.appendChild(key);
+  }
 
   async function renderChoices() {
     const box = $("#recipe-choices");
