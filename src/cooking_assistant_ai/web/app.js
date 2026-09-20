@@ -698,17 +698,17 @@
     }
   }
 
-  // A timeline the way a timeline is drawn: one line, events pinned along it in the order
-  // they happen, each leading to the next. The first attempt was a Gantt chart - lanes of
-  // equipment with proportional bars - which is a project plan, not a cook's line, and in a
-  // narrow column it truncated every label to "chi..." and "ud...".
+  // A sequence, not a scale. Events sit evenly along the line in the order they happen and
+  // the time between them is written on the segment that joins them.
   //
-  // Laid out in pixels per minute rather than percentages, so an hour always looks like an
-  // hour and nothing collapses into an unreadable smear; the track scrolls instead. Events
-  // alternate above and below the line, which is how a historical timeline keeps labels apart.
+  // Two earlier attempts laid this out proportionally - first as lanes of bars, then as
+  // pixels per minute - and both were the same chart wearing different clothes. Proportional
+  // time cannot work here: a thirty-second step and a forty-minute simmer have to be equally
+  // readable, and scaling by duration makes one of them a smear. Spacing by order and
+  // labelling the gaps says everything the cook needs - what is next, and how long until it -
+  // without any of that.
   const DISH_HUES = [28, 190, 140, 330, 265, 95];
-  const PX_PER_MIN = 9;
-  const MIN_EVENT_GAP = 116;        // px, so two cards can never sit on top of each other
+  const EVENT_SLOT = 168;           // px between one event and the next, always
 
   function dishHue(recipeId, order) {
     const n = order.indexOf(recipeId);
@@ -720,6 +720,16 @@
     const [family, ring] = appliance.split(":");
     if (family === "stovetop") return ring ? "Burner " + ring : "Hob";
     return family.replace("_", " ").replace(/^./, (c) => c.toUpperCase());
+  }
+
+  // "45s", "10 min", "1h 5m" - the same shape whatever the scale, which is the point.
+  function gapText(fromISO, toISO) {
+    const secs = Math.round((new Date(toISO) - new Date(fromISO)) / 1000);
+    if (secs <= 0) return "same time";
+    if (secs < 60) return secs + "s";
+    const mins = Math.round(secs / 60);
+    if (mins < 60) return mins + " min";
+    return Math.floor(mins / 60) + "h" + (mins % 60 ? " " + (mins % 60) + "m" : "");
   }
 
   function renderTimeline(tl) {
@@ -734,75 +744,65 @@
     }
 
     const now = app.state && app.state.now ? new Date(app.state.now) : new Date();
-    const stamps = placed.flatMap((t) => [new Date(t.start_at), new Date(t.end_at)]).concat(now);
-    const from = new Date(Math.min(...stamps));
-    const to = new Date(Math.max(...stamps));
-    const minutes = Math.max((to - from) / 60000, 10);
-    const at = (d) => ((new Date(d) - from) / 60000) * PX_PER_MIN;
-
-    // Nudge cards right only far enough that they do not overlap, keeping the order intact.
-    // The dot stays on the true time; only the card slides, and the stalk leans to show it.
-    // Crowding is counted per side: cards alternate above and below the line, so two events
-    // a few minutes apart sit opposite each other rather than shoving one another along.
-    // Counting them together made a cascade in which every card ended up evenly spaced and
-    // none of them was anywhere near its own time.
-    const lastOn = [-Infinity, -Infinity];
-    const events = placed.map((t, i) => {
-      const side = i % 2;
-      const x = at(t.start_at);
-      const slot = Math.max(x, lastOn[side] + MIN_EVENT_GAP);
-      lastOn[side] = slot;
-      return { t, x, slot, above: side === 0 };
-    });
-
-    const width = Math.max(minutes * PX_PER_MIN, ...lastOn.filter(Number.isFinite)) + 150;
     const order = [...new Set(placed.map((t) => t.recipe_id))];
-
     const scroller = el("div", "tl-scroll");
     const track = el("div", "tl-track");
-    track.style.width = width + "px";
+    track.style.width = (placed.length * EVENT_SLOT + 60) + "px";
     track.appendChild(el("div", "tl-spine"));
 
-    events.forEach((ev) => {
-      const { t, x, slot, above } = ev;
+    const xOf = (i) => 40 + i * EVENT_SLOT;
+
+    placed.forEach((t, i) => {
+      const x = xOf(i);
       const hue = dishHue(t.recipe_id, order);
+      const above = i % 2 === 0;
 
       const dot = el("div", "tl-dot " + t.status);
       dot.style.left = x + "px";
       dot.style.setProperty("--hue", hue);
       track.appendChild(dot);
 
-      // How long it runs, drawn on the line itself between this event and its end.
-      const run = el("div", "tl-run " + t.status);
-      run.style.left = x + "px";
-      run.style.width = Math.max(at(t.end_at) - x, 2) + "px";
-      run.style.setProperty("--hue", hue);
-      track.appendChild(run);
-
       const stalk = el("div", "tl-stalk " + (above ? "up" : "down"));
-      stalk.style.left = Math.min(x, slot) + "px";
-      stalk.style.width = Math.abs(slot - x) + "px";
+      stalk.style.left = x + "px";
       stalk.style.setProperty("--hue", hue);
       track.appendChild(stalk);
 
       const card = el("div", "tl-event " + (above ? "up" : "down") + " " + t.status);
-      card.style.left = slot + "px";
+      // Centred on its dot, but never off the left edge - the first card sat at -26px
+      // and lost its border and half its time.
+      card.style.left = Math.max(4, x - 66) + "px";
       card.style.setProperty("--hue", hue);
-      card.appendChild(el("div", "tl-when", fmtTime(t.start_at)));
+      const head = el("div", "tl-head");
+      head.appendChild(el("span", "tl-when", fmtTime(t.start_at)));
+      head.appendChild(el("span", "tl-takes", gapText(t.start_at, t.end_at)));
+      card.appendChild(head);
       card.appendChild(el("div", "tl-what", t.label));
       const where = laneName(t.appliance);
       if (where || t.temp_f) {
         const line = el("div", "tl-where");
         line.appendChild(applianceIcon((t.appliance || "").split(":")[0]));
-        line.appendChild(document.createTextNode(
-          where + (t.temp_f ? ` ${t.temp_f}°` : "")));
+        line.appendChild(document.createTextNode(where + (t.temp_f ? ` ${t.temp_f}°` : "")));
         card.appendChild(line);
       }
       track.appendChild(card);
+
+      // How long until the next thing, written on the line between them.
+      if (i < placed.length - 1) {
+        const gap = el("div", "tl-gap");
+        gap.style.left = x + "px";
+        gap.style.width = EVENT_SLOT + "px";
+        gap.appendChild(el("span", null, gapText(t.start_at, placed[i + 1].start_at)));
+        track.appendChild(gap);
+      }
     });
 
+    // Now has no position on a line that is not a scale, so it marks the join it falls in:
+    // after everything already started, before the next thing due.
+    const nextUp = placed.findIndex((t) => new Date(t.start_at) > now);
     const marker = el("div", "tl-now");
-    marker.style.left = at(now) + "px";
+    marker.style.left = Math.max(6, nextUp < 0 ? xOf(placed.length - 1) + 40
+                                 : (nextUp === 0 ? xOf(0) - 22
+                                                 : xOf(nextUp) - EVENT_SLOT / 2)) + "px";
     marker.appendChild(el("span", "tl-now-pill", "now"));
     track.appendChild(marker);
 
@@ -821,8 +821,9 @@
     }
     box.appendChild(key);
 
-    // Open on what is happening rather than on the beginning of the evening.
-    requestAnimationFrame(() => { scroller.scrollLeft = Math.max(0, at(now) - 90); });
+    requestAnimationFrame(() => {
+      scroller.scrollLeft = Math.max(0, xOf(Math.max(nextUp, 0)) - 120);
+    });
   }
 
 

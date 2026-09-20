@@ -1,9 +1,10 @@
 """The timeline is a picture, so the picture is what gets checked.
 
 It began as a four-column text table nobody read, became a Gantt chart - lanes of equipment
-with proportional bars, which is a project plan and truncated every label to "chi..." in a
-narrow column - and is now a timeline proper: one line, events pinned along it in the order
-they happen, each leading to the next.
+with proportional bars - and then the same chart again in pixels per minute. Both were scales,
+and a scale cannot draw this: a thirty-second step and a forty-minute simmer have to be equally
+readable. It is a sequence now. Events sit evenly along the line in the order they happen and
+the time between them is written on the segment that joins them.
 
 These run the page's own renderTimeline in a JS engine and assert on the geometry it produced,
 because there is no browser here and a wrong bar is invisible in a diff.
@@ -47,20 +48,20 @@ function fmtWindow(a, b) { return fmtTime(a) + "-" + fmtTime(b); }
 var app = { state: __STATE__ };
 __CODE__
 renderTimeline(app.state.timeline);
-var out = { events: [], dots: [], runs: [], stalks: [], now: null, key: [], empty: false };
+var out = { events: [], dots: [], gaps: [], now: null, key: [], empty: false };
 function scan(node) {
   var c = node.cls || "";
   if (c.indexOf("tl-event") === 0) out.events.push({
     left: parseFloat(node.style.left), cls: c,
-    when: node.children[0].text, what: node.children[1].text,
+    when: node.children[0].children[0].text,
+    takes: node.children[0].children[1].text,
+    what: node.children[1].text,
     where: node.children[2] ? node.children[2].children.map(function (x) {
       return x.family || x.text || ""; }).join(" ") : "",
     hue: node.style["--hue"] });
   if (c.indexOf("tl-dot") === 0) out.dots.push({ left: parseFloat(node.style.left), cls: c });
-  if (c.indexOf("tl-run") === 0) out.runs.push({ left: parseFloat(node.style.left),
-      width: parseFloat(node.style.width), cls: c });
-  if (c.indexOf("tl-stalk") === 0) out.stalks.push({ left: parseFloat(node.style.left),
-      width: parseFloat(node.style.width), cls: c });
+  if (c === "tl-gap") out.gaps.push({ left: parseFloat(node.style.left),
+      text: node.children[0].text });
   if (c === "tl-now") out.now = parseFloat(node.style.left);
   if (c === "tl-key-item") out.key.push(node.children[1] ? node.children[1].text : "");
   if (c === "empty") out.empty = true;
@@ -99,51 +100,81 @@ def by_label(out):
     return {e["what"]: e for e in out["events"]}
 
 
+@pytest.fixture
+def lopsided(ctx, prepped):
+    """Thirty seconds beside forty minutes: what no proportional layout can draw."""
+    for args in (
+        {"recipe_id": "r001", "label": "quick flip", "step_ids": ["r001-s4"],
+         "duration_s": 30, "appliance": "stovetop"},
+        {"recipe_id": "r001", "label": "long roast", "step_ids": ["r001-s5"],
+         "duration_s": 2400, "appliance": "oven", "after": "quick flip"},
+    ):
+        assert dispatch(ctx, "add_task", args).ok, args["label"]
+    return ctx
+
+
 def test_every_task_becomes_an_event_on_the_line(planned):
     out = draw(planned)
     assert set(by_label(out)) == {"sear thighs", "rice boil", "rice simmer"}
-    assert len(out["dots"]) == 3 and len(out["runs"]) == 3
+    assert len(out["dots"]) == 3
+
+
+def test_events_are_spaced_evenly_whatever_they_take(lopsided):
+    """The whole reason for the rewrite: spacing by duration made one of these a smear."""
+    out = draw(lopsided)
+    xs = sorted(d["left"] for d in out["dots"])
+    assert len(xs) == 2
+    assert xs[1] - xs[0] == pytest.approx(168, abs=1)   # one slot, regardless
+
+
+def test_a_thirty_second_step_and_a_forty_minute_one_read_the_same(lopsided):
+    out = draw(lopsided)
+    ev = by_label(out)
+    assert ev["quick flip"]["takes"] == "30s"
+    assert ev["long roast"]["takes"] == "40 min"
+
+
+def test_the_wait_between_tasks_is_written_on_the_line(lopsided):
+    out = draw(lopsided)
+    assert len(out["gaps"]) == 1
+    assert out["gaps"][0]["text"] == "30s"          # the flip finishes, the roast begins
+
+
+def test_there_is_one_gap_label_between_each_pair(planned):
+    out = draw(planned)
+    assert len(out["gaps"]) == len(out["events"]) - 1
+    assert all(g["text"] for g in out["gaps"])
+
+
+def test_tasks_starting_together_say_so_rather_than_showing_nothing(ctx, prepped):
+    for args in (
+        {"recipe_id": "r001", "label": "sear thighs", "step_ids": ["r001-s3"],
+         "duration_s": 300, "appliance": "stovetop"},
+        {"recipe_id": "r002", "label": "rice boil", "step_ids": ["r002-s2"],
+         "duration_s": 600, "appliance": "stovetop"},
+    ):
+        assert dispatch(ctx, "add_task", args).ok
+    out = draw(ctx)
+    assert out["gaps"][0]["text"] == "same time"
 
 
 def test_events_run_left_to_right_in_the_order_they_happen(planned):
     out = draw(planned)
     assert out["dots"] == sorted(out["dots"], key=lambda d: d["left"])
-    assert all(d["left"] >= 0 for d in out["dots"])
-
-
-def test_how_long_a_task_runs_is_drawn_on_the_line(planned):
-    out = draw(planned)
-    runs = sorted(out["runs"], key=lambda r: r["width"])
-    # 5 min sear, 10 min boil, 15 min simmer, at a fixed pixels-per-minute
-    assert runs[0]["width"] < runs[1]["width"] < runs[2]["width"]
-    assert runs[1]["width"] == pytest.approx(runs[0]["width"] * 2, rel=0.01)
 
 
 def test_cards_alternate_above_and_below_the_line(planned):
-    """That is how a historical timeline keeps its labels apart."""
+    """That is how a timeline keeps its labels apart."""
     out = draw(planned)
     sides = ["up" if "up" in e["cls"] else "down" for e in out["events"]]
     assert sides == ["up", "down", "up"]
 
 
-def test_a_card_only_slides_when_its_own_side_is_crowded(planned):
-    """Counting both sides together cascaded: every card ended up evenly spaced and none of
-    them anywhere near its own time."""
+def test_no_card_hangs_off_the_left_edge(planned):
+    """The first card sat at -26px and lost its border and half its time."""
     out = draw(planned)
-    dots = sorted(d["left"] for d in out["dots"])
-    cards = sorted(e["left"] for e in out["events"])
-    # the first two are opposite each other, so neither needs to move
-    assert cards[0] == dots[0]
-    assert cards[1] == dots[1]
-    # and nothing is ever dragged left of its own moment
-    assert all(c >= d - 0.01 for c, d in zip(cards, dots))
-
-
-def test_the_dot_stays_on_the_true_time_when_a_card_slides(planned):
-    out = draw(planned)
-    leaning = [s for s in out["stalks"] if s["width"] > 0]
-    for stalk in leaning:
-        assert any(abs(d["left"] - stalk["left"]) < 0.01 for d in out["dots"])
+    assert all(e["left"] >= 0 for e in out["events"])
+    assert out["now"] >= 0
 
 
 def test_a_dish_keeps_one_colour(planned):
@@ -158,8 +189,7 @@ def test_each_event_says_when_and_where(planned):
     out = draw(planned)
     for e in out["events"]:
         assert e["when"].endswith("AM") or e["when"].endswith("PM")
-        assert "Burner" in e["where"]
-        assert "stovetop" in e["where"]          # the drawn appliance icon rides along
+        assert "Burner" in e["where"] and "stovetop" in e["where"]
 
 
 def test_a_running_task_is_drawn_as_running(planned):

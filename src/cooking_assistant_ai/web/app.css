@@ -547,25 +547,18 @@ button.ghost { background: transparent; color: var(--muted); }
 .unresolved-item b { color: var(--text); font-weight: 600; }
 
 /* ---------------------------------------------------------------- timeline
-   One line, events pinned along it in the order they happen, each leading to the next, the
-   way a historical timeline is drawn. The Gantt chart this replaced was a project plan: lanes
-   of equipment with proportional bars, which in a 300px column truncated every label to
-   "chi..." and "ud...". Laid out in pixels per minute so an hour always looks like an hour;
-   the track scrolls rather than squashing. */
+   A sequence, not a scale. Events sit evenly along the line in the order they happen and the
+   time between them is written on the segment that joins them. Two earlier attempts laid this
+   out proportionally - lanes of bars, then pixels per minute - and both were the same chart
+   in different clothes: a thirty-second step and a forty-minute simmer have to be equally
+   readable, which scaling by duration cannot do. */
 .tl-scroll { overflow-x: auto; overflow-y: hidden; padding: 4px 0 2px; }
 .tl-scroll::-webkit-scrollbar { height: 7px; }
 .tl-scroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
-.tl-track { position: relative; height: 216px; min-width: 100%; }
-
-/* The line itself, dead centre, with the run of each task drawn along it. */
+.tl-track { position: relative; height: 214px; min-width: 100%; }
 .tl-spine { position: absolute; left: 0; right: 0; top: 50%; height: 2px;
   background: var(--line); border-radius: 2px; }
-.tl-run { position: absolute; top: 50%; height: 6px; margin-top: -3px; border-radius: 4px;
-  background: hsl(var(--hue) 60% 44%); opacity: .85; }
-.tl-run.active { background: hsl(var(--hue) 80% 52%); box-shadow: 0 0 8px hsl(var(--hue) 80% 52% / .6); }
-.tl-run.complete { background: hsl(var(--hue) 14% 30%); opacity: .7; }
 
-/* The moment itself. */
 .tl-dot { position: absolute; top: 50%; width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px;
   border-radius: 50%; background: hsl(var(--hue) 62% 50%);
   border: 2px solid var(--panel); box-shadow: 0 0 0 1.5px hsl(var(--hue) 62% 50%); z-index: 2; }
@@ -573,14 +566,18 @@ button.ghost { background: transparent; color: var(--muted); }
   box-shadow: 0 0 0 1.5px hsl(var(--hue) 85% 58%), 0 0 10px hsl(var(--hue) 85% 58% / .8); }
 .tl-dot.complete { background: var(--panel-2); box-shadow: 0 0 0 1.5px var(--line); }
 
-/* The stalk leans when a card had to slide right to avoid its neighbour, so the dot always
-   stays on the true time. */
-.tl-stalk { position: absolute; height: 22px; border-top: 2px dotted hsl(var(--hue) 45% 45%);
-  opacity: .8; }
+/* How long until the next thing, on the line between the two. */
+.tl-gap { position: absolute; top: 50%; height: 20px; margin-top: -10px;
+  display: flex; align-items: center; justify-content: center; pointer-events: none; }
+.tl-gap span { font-size: 10.5px; color: var(--muted); background: var(--panel);
+  padding: 1px 7px; border-radius: 9px; border: 1px solid var(--line); white-space: nowrap; }
+
+.tl-stalk { position: absolute; width: 2px; height: 22px; margin-left: -1px;
+  background: hsl(var(--hue) 45% 42%); opacity: .75; }
 .tl-stalk.up { top: calc(50% - 24px); }
 .tl-stalk.down { top: calc(50% + 2px); }
 
-.tl-event { position: absolute; width: 108px; padding: 7px 9px; border-radius: 10px;
+.tl-event { position: absolute; width: 132px; padding: 7px 9px; border-radius: 10px;
   background: var(--panel-2); border: 1px solid var(--line);
   border-left: 3px solid hsl(var(--hue) 62% 50%); }
 .tl-event.up { bottom: calc(50% + 24px); }
@@ -589,13 +586,15 @@ button.ghost { background: transparent; color: var(--muted); }
   box-shadow: 0 0 0 1px hsl(var(--hue) 80% 58% / .45); }
 .tl-event.complete { opacity: .55; }
 .tl-event.complete .tl-what { text-decoration: line-through; }
+.tl-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
 .tl-when { font-size: 11px; font-weight: 700; color: hsl(var(--hue) 62% 62%); letter-spacing: .02em; }
+.tl-takes { font-size: 10px; color: var(--muted); white-space: nowrap; }
 .tl-what { font-size: 12.5px; color: var(--text); line-height: 1.25; margin-top: 1px; }
 .tl-where { display: flex; align-items: center; gap: 4px; font-size: 10.5px;
   color: var(--muted); margin-top: 3px; }
 .tl-where .appl-icon { width: 15px; height: 15px; margin: 0; flex: 0 0 auto; }
 
-/* Now, over everything. */
+/* Now sits at the join it falls in: after everything started, before the next thing due. */
 .tl-now { position: absolute; top: 4px; bottom: 4px; width: 2px; background: var(--accent);
   box-shadow: 0 0 7px var(--accent); z-index: 3; }
 .tl-now-pill { position: absolute; top: -3px; left: 4px; font-size: 9.5px; font-weight: 700;
@@ -606,27 +605,3 @@ button.ghost { background: transparent; color: var(--muted); }
 .tl-key-item { display: inline-flex; align-items: center; gap: 5px; }
 .tl-key-item i { width: 9px; height: 9px; border-radius: 3px; display: inline-block;
   background: hsl(var(--hue) 62% 50%); }
-
-/* Progress as steps, not a fraction. "4/9" says how many; a row of dots says which, and each
-   one is a target the cook can tap when the model has not kept up. */
-.dots { display: flex; flex-wrap: wrap; gap: 4px; margin: 7px 0 2px; }
-.dot { width: 24px; height: 24px; border-radius: 50%; font-size: 11px; font-weight: 600;
-  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
-  background: var(--panel-2); color: var(--muted); border: 1px solid var(--line);
-  padding: 0; transition: background .15s, border-color .15s, color .15s; }
-.dot.done { background: hsl(var(--hue) 55% 38%); border-color: hsl(var(--hue) 55% 48%);
-  color: #fff; cursor: default; }
-.dot.here { border-color: hsl(var(--hue) 75% 60%); color: hsl(var(--hue) 75% 72%);
-  box-shadow: 0 0 0 2px hsl(var(--hue) 75% 60% / .3); }
-.dot.skipped { opacity: .45; text-decoration: line-through; cursor: default; }
-.dot:not(.done):not(.skipped):hover { border-color: var(--accent); color: var(--accent); }
-
-/* Missing ingredients as the same tiles the step panel uses. An ingredient should look the
-   same wherever it turns up, so the cook recognises it rather than reading it. */
-.gap-tiles { display: flex; flex-wrap: wrap; gap: 7px; margin: 8px 0 4px; }
-.gap { display: inline-flex; align-items: center; gap: 8px; padding: 6px 11px 6px 9px;
-  background: var(--panel-2); border: 1px solid var(--line); border-radius: 11px; }
-.gap-icon { font-size: 21px; line-height: 1; }
-.gap-body { display: flex; flex-direction: column; line-height: 1.2; }
-.gap-name { font-size: 13px; font-weight: 600; color: var(--text); }
-.gap-swap { font-size: 11px; color: var(--accent); }
