@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from cooking_assistant_ai.core import scheduler
 from cooking_assistant_ai.core.fmt import fmt_amount, fmt_dur, fmt_ingredient, fmt_time
-from cooking_assistant_ai.model.types import Ingredient, Recipe, Session, Step
+from cooking_assistant_ai.model.types import Ingredient, Overlay, Recipe, Session, Step
 
 # --------------------------------------------------------------------------- ingredient matching
 
@@ -692,3 +692,34 @@ def render_cook_plan(session: Session, now: datetime, upcoming: int = 10) -> str
         lines.append(f"{tag}{when:>8}  {who}{item.text}{meta}{uses}  [{item.id}]")
         shown += 1
     return "\n".join(lines)
+
+
+def step_ingredients(recipe: Recipe, overlay: Optional[Overlay], step: Step) -> List[Dict[str, Any]]:
+    """The ingredients a step actually calls for, at the scale the cook is working to.
+
+    The tablet draws these as tiles beside the step, because a spoken list of six things with
+    six quantities is not something anyone holds in their head over a hot pan - the cook kept
+    having to ask "how much, and for which dish". Substitutions are already written into the
+    recipe, so the name here is whatever they swapped to.
+    """
+    ov = overlay or Overlay(recipe_id=recipe.id)
+    scale = ov.scale_factor
+    # The model linked these at import, because "mash the block of tofu" uses the firm tofu
+    # and no amount of word matching gets there. Where it has not been asked yet, fall back
+    # to the text so an unclassified recipe still shows something.
+    if step.ingredient_ids:
+        chosen = [recipe.ingredient(i) for i in step.ingredient_ids]
+        wanted = [i for i in chosen if i is not None]
+    else:
+        text = substitute_text(step.text, recipe, ov, step.id)
+        wanted = [i for i in recipe.ingredients if mentions_ingredient(text, i.name)]
+    out: List[Dict[str, Any]] = []
+    for ing in wanted:
+        amount = ing.amount * scale
+        out.append({
+            "id": ing.id, "name": ing.name, "key": ing.key or "",
+            "amount": amount, "unit": ing.unit,
+            "text": fmt_ingredient(ing.name, amount, ing.unit),
+            "qty": fmt_ingredient("", amount, ing.unit).strip(),
+        })
+    return out

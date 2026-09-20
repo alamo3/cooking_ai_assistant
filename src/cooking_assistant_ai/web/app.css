@@ -61,7 +61,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent);
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* top bar */
-.topbar { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px;
+.topbar { display: flex; align-items: center; justify-content: space-between; padding: 7px 18px;
   border-bottom: 1px solid var(--line); background: rgba(27,24,21,.85);
   backdrop-filter: blur(12px); flex: 0 0 auto; z-index: 2; }
 .tabs { display: flex; gap: 6px; background: rgba(0,0,0,.25); padding: 4px; border-radius: 13px;
@@ -70,7 +70,7 @@ input:focus, select:focus { outline: none; border-color: var(--accent);
 .tab:hover:not(:disabled) { background: rgba(255,238,214,.05); border-color: transparent; }
 .tab.active { background: var(--accent); color: #1a1409; border-color: var(--accent); font-weight: 680;
   box-shadow: 0 2px 10px rgba(233,165,63,.28); }
-.clock { display: flex; gap: 14px; align-items: baseline; }
+.clock { display: flex; gap: 10px; align-items: baseline; font-size: 14px; }
 #now { font-size: 31px; font-weight: 640; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
 #plating { font-size: 15px; }
 .conn { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
@@ -186,7 +186,14 @@ input:focus, select:focus { outline: none; border-color: var(--accent);
 
 /* assistant */
 .assistant { display: flex; align-items: center; gap: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+/* The chef was 104px tall with a 16px gutter and a rule under it: the top quarter of the
+   tablet, spent on decoration. It is a status light now - it still shows listening, thinking
+   and speaking, which is worth having, at a size that earns its place. */
 .avatar { width: 104px; height: 108px; flex: 0 0 auto; }
+.assistant.compact { gap: 12px; padding-bottom: 10px; align-items: center; }
+.assistant.compact .avatar { width: 46px; height: 48px; }
+.assistant.compact .status { font-size: 13px; }
+.assistant.compact .next-action { font-size: 12.5px; }
 .chef { width: 100%; height: 100%; overflow: visible; }
 
 .chef .halo { fill: none; stroke: var(--line); stroke-width: 2; opacity: .7; transition: stroke .3s; }
@@ -356,6 +363,40 @@ button.ghost { background: transparent; color: var(--muted); }
 /* A picture of the kitchen. Every appliance is drawn in one stroke colour; the parts that
    glow when it is running (.flame, .glow, .steam) are lit by state, so an active hob reads
    as "on" from across the room the way a real one does. */
+/* The step the cook is on, and what goes in the pan. This is the one thing on screen that
+   should be readable standing back from the hob with wet hands, so it is the largest type in
+   the app and it stays put until the step is actually recorded as done. */
+.step-panel { background: var(--panel-2); border: 1px solid var(--line); border-left: 4px solid var(--accent);
+  border-radius: var(--radius); padding: 16px 18px; margin-bottom: 12px; }
+.step-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.step-dish { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+  font-weight: 700; }
+.step-count { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.step-text { margin: 8px 0 0; font-size: 25px; line-height: 1.3; font-weight: 600; color: var(--text); }
+
+/* Tiles, not a sentence: six things with six quantities read as a list, not as prose. */
+.step-needs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.need { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto;
+  column-gap: 9px; align-items: center; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; padding: 8px 12px 8px 10px; min-width: 132px; }
+.need-icon { grid-row: 1 / 3; font-size: 27px; line-height: 1; }
+.need-qty { font-size: 17px; font-weight: 700; color: var(--accent); line-height: 1.15; }
+.need-name { font-size: 12.5px; color: var(--muted); line-height: 1.2; }
+
+.step-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-top: 14px; }
+.step-meta { font-size: 12.5px; color: var(--muted); }
+.step-done { font-size: 15px; font-weight: 600; padding: 10px 18px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--accent); color: #10141a; cursor: pointer; }
+.step-done:active { transform: translateY(1px); }
+.step-next-up { margin-top: 10px; font-size: 13px; color: var(--muted);
+  border-top: 1px dashed var(--line); padding-top: 9px; }
+
+@media (max-width: 900px) {
+  .step-text { font-size: 21px; }
+  .need { min-width: 118px; }
+}
+
 .appliances { display: grid; gap: 10px; margin-bottom: 14px;
   grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); }
 

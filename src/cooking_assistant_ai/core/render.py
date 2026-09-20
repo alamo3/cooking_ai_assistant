@@ -11,7 +11,7 @@ from cooking_assistant_ai.core import scheduler
 from cooking_assistant_ai.core.appliances import board as appliance_board
 from cooking_assistant_ai.core.failures import to_list as failure_list
 from cooking_assistant_ai.core.fmt import fmt_dur, fmt_ingredient, fmt_time, fmt_window
-from cooking_assistant_ai.core.plan import mentions_ingredient, substitute_text
+from cooking_assistant_ai.core.plan import mentions_ingredient, step_ingredients, substitute_text
 from cooking_assistant_ai.model.types import Overlay, Recipe, Session, Step, Task
 
 
@@ -342,6 +342,8 @@ def recipe_view(session: Session, r: Recipe) -> Dict[str, Any]:
             "duration_s": s.duration_s, "appliance": s.appliance, "temp_f": s.temp_f,
             "note": ov.step_notes.get(s.id), "skip_reason": ov.skip_reasons.get(s.id),
             "added": added,
+            # What this step calls for, at the cook's scale, for the tiles on the tablet.
+            "needs": step_ingredients(r, ov, s),
         })
     servings = r.servings * scale
     return {

@@ -17,10 +17,7 @@
     <button class="tab" data-screen="recipes">Recipes</button>
     <button class="tab" data-screen="pantry">Pantry</button>
   </nav>
-  <div class="clock">
-    <span id="now">--:--</span>
-    <span id="plating" class="muted">plating not set</span>
-  </div>
+  <div class="clock"><span id="now">--:--</span><span id="plating" class="muted"></span></div>
   <div class="conn"><span id="conn-dot" class="dot"></span><span id="conn-text">connecting</span></div>
   <button id="server-chip" class="server-chip" title="Server">
     <span class="gear">&#9881;</span><span id="server-badge" class="server-badge" hidden></span>
@@ -61,7 +58,7 @@
   </section>
 
   <section class="col col-center">
-    <div class="assistant">
+    <div class="assistant compact">
       <div id="avatar" class="avatar" data-state="idle">
         <svg class="chef" viewBox="0 0 100 104" aria-hidden="true">
           <circle class="halo" cx="50" cy="56" r="46"/>
@@ -86,6 +83,19 @@
         <div id="next-action" class="next-action"></div>
       </div>
     </div>
+    <section id="step-now" class="step-panel" hidden>
+      <div class="step-head">
+        <span id="step-dish" class="step-dish"></span>
+        <span id="step-count" class="step-count"></span>
+      </div>
+      <p id="step-text" class="step-text"></p>
+      <div id="step-needs" class="step-needs"></div>
+      <div class="step-foot">
+        <span id="step-meta" class="step-meta"></span>
+        <button id="step-done" class="step-done">Done</button>
+      </div>
+      <div id="step-next" class="step-next-up"></div>
+    </section>
     <div id="conversation" class="conversation"></div>
     <div class="controls">
       <button id="listen-toggle" class="listen" disabled>Always listening: off</button>

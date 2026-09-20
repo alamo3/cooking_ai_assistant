@@ -390,6 +390,7 @@
     renderPlanSummary(s.plan.summary);
     renderAppliances(s.appliances);
     renderUnresolved(s.unresolved);
+    renderStepPanel(s.progress.recipes);
     renderRecipes(s.progress.recipes);
     if (screen === "recipes") renderChoices();
     $("#recipes-count").textContent = s.progress.recipes.length ? `(${s.progress.recipes.length})` : "";
@@ -471,6 +472,99 @@
     }
   }
 
+
+  // ------------------------------------------------------------ the step you are on
+  //
+  // Voice alone was clunky for this: a spoken list of six things with six quantities is not
+  // something anyone holds in their head over a hot pan, and the cook kept having to ask "how
+  // much, and for which dish". The step and its ingredients now sit on screen, large, and
+  // stay there until the step is actually done.
+  //
+  // The glyphs are keyed off the grocery key the model already assigns at import, matched
+  // longest-first so "spring onion" does not land on "onion". They are emoji on purpose:
+  // legible at a glance from across a kitchen, no assets to fetch, and nothing to go stale
+  // when the tablet is offline.
+  const FOOD_ICONS = [
+    ["garlic powder", "\u{1F9C2}"], ["onion powder", "\u{1F9C2}"],
+    ["chili powder", "\u{1F9C2}"], ["curry powder", "\u{1F9C2}"],
+    ["spring onion", "\u{1F33F}"], ["green onion", "\u{1F33F}"], ["onion", "\u{1F9C5}"],
+    ["garlic", "\u{1F9C4}"], ["ginger", "\u{1FAD5}"], ["chili", "\u{1F336}"],
+    ["pepper", "\u{1FAD1}"], ["tomato", "\u{1F345}"], ["potato", "\u{1F954}"],
+    ["carrot", "\u{1F955}"], ["cabbage", "\u{1F96C}"], ["spinach", "\u{1F96C}"],
+    ["kale", "\u{1F96C}"], ["lettuce", "\u{1F96C}"], ["broccoli", "\u{1F966}"],
+    ["mushroom", "\u{1F344}"], ["aubergine", "\u{1F346}"], ["eggplant", "\u{1F346}"],
+    ["courgette", "\u{1F952}"], ["zucchini", "\u{1F952}"], ["cucumber", "\u{1F952}"],
+    ["corn", "\u{1F33D}"], ["avocado", "\u{1F951}"], ["lemon", "\u{1F34B}"],
+    ["lime", "\u{1F34B}"], ["coconut milk", "\u{1F965}"], ["coconut", "\u{1F965}"],
+    ["tofu", "\u{1F9CA}"], ["tempeh", "\u{1F9CA}"], ["chickpea", "\u{1FAD8}"],
+    ["lentil", "\u{1FAD8}"], ["bean", "\u{1FAD8}"], ["pea", "\u{1FAD8}"],
+    ["rice", "\u{1F35A}"], ["noodle", "\u{1F35C}"], ["pasta", "\u{1F35D}"],
+    ["bread", "\u{1F956}"], ["baguette", "\u{1F956}"], ["flour", "\u{1F33E}"],
+    ["quinoa", "\u{1F33E}"], ["oat", "\u{1F33E}"], ["oil", "\u{1FAD2}"],
+    ["butter", "\u{1F9C8}"], ["cheese", "\u{1F9C0}"], ["milk", "\u{1F95B}"],
+    ["cream", "\u{1F95B}"], ["yogurt", "\u{1F95B}"], ["egg", "\u{1F95A}"],
+    ["salt", "\u{1F9C2}"], ["sugar", "\u{1F36C}"], ["honey", "\u{1F36F}"],
+    ["maple", "\u{1F36F}"], ["syrup", "\u{1F36F}"], ["vinegar", "\u{1F9F4}"],
+    ["soy sauce", "\u{1F9F4}"], ["sauce", "\u{1F9F4}"], ["paste", "\u{1F962}"],
+    ["stock", "\u{1F963}"], ["broth", "\u{1F963}"], ["water", "\u{1F4A7}"],
+    ["wine", "\u{1F377}"], ["nut", "\u{1F95C}"], ["cashew", "\u{1F95C}"],
+    ["peanut", "\u{1F95C}"], ["seed", "\u{1F33B}"], ["herb", "\u{1F33F}"],
+    ["parsley", "\u{1F33F}"], ["coriander", "\u{1F33F}"], ["cilantro", "\u{1F33F}"],
+    ["basil", "\u{1F33F}"], ["thyme", "\u{1F33F}"], ["yeast", "\u{1F9C2}"],
+    ["turmeric", "\u{1F9C2}"], ["cumin", "\u{1F9C2}"], ["paprika", "\u{1F9C2}"],
+    ["masala", "\u{1F9C2}"], ["curry", "\u{1F9C2}"], ["spice", "\u{1F9C2}"],
+    ["powder", "\u{1F9C2}"],
+  ].sort((a, b) => b[0].length - a[0].length);
+
+  function foodIcon(need) {
+    const hay = ((need.key || "") + " " + (need.name || "")).toLowerCase();
+    for (const [word, glyph] of FOOD_ICONS) if (hay.includes(word)) return glyph;
+    return "\u{1F372}";
+  }
+
+  function renderStepPanel(recipes) {
+    const box = $("#step-now");
+    // The dish the cook is actually on: the one furthest along that still has work left.
+    // With several going at once, the model moves this with advance_step.
+    let best = null;
+    for (const r of recipes || []) {
+      const cur = (r.steps || []).find((st) => st.n === r.current_step);
+      if (!cur) continue;
+      const done = (r.completed_steps || []).length;
+      if (!best || done > best.done) best = { r, cur, done };
+    }
+    if (!best) { box.hidden = true; return; }
+    const { r, cur } = best;
+
+    $("#step-dish").textContent = r.title;
+    $("#step-count").textContent = `Step ${cur.n} of ${r.steps.length}`;
+    $("#step-text").textContent = cur.text;
+
+    const needs = $("#step-needs");
+    needs.innerHTML = "";
+    for (const need of cur.needs || []) {
+      const tile = el("div", "need");
+      tile.appendChild(el("span", "need-icon", foodIcon(need)));
+      tile.appendChild(el("span", "need-qty", need.qty || ""));
+      tile.appendChild(el("span", "need-name", need.name));
+      needs.appendChild(tile);
+    }
+    needs.hidden = !(cur.needs || []).length;
+
+    const meta = [cur.duration_s ? fmtDur(cur.duration_s) : null,
+      cur.appliance ? cur.appliance.replace("_", " ") + (cur.temp_f ? ` ${cur.temp_f}°F` : "") : null,
+      cur.note ? "note: " + cur.note : null].filter(Boolean).join("  ·  ");
+    $("#step-meta").textContent = meta;
+
+    const done = $("#step-done");
+    done.textContent = `Done with step ${cur.n}`;
+    done.onclick = () => uiTool("POST", `/session/${app.sessionId}/steps/${cur.id}/complete`);
+
+    const next = r.steps.find((st) => st.n > cur.n && st.status === "pending");
+    $("#step-next").textContent = next ? `Then: ${next.text}` : "";
+    box.hidden = false;
+  }
+
   function renderRecipes(recipes) {
     const box = $("#recipe-cards");
     box.innerHTML = "";
@@ -491,29 +585,13 @@
       bar.appendChild(fill);
       card.appendChild(bar);
 
+      // The step itself lives in the panel in the middle of the screen, not repeated here:
+      // one place to look, at a size worth looking at.
       const cur = r.steps.find((st) => st.n === r.current_step);
-      if (cur) {
-        const now = el("div", "step-now");
-        now.appendChild(el("span", "n", `Step ${cur.n}`));
-        now.appendChild(document.createTextNode(cur.text));
-        card.appendChild(now);
-        const meta = [cur.duration_s ? fmtDur(cur.duration_s) : null,
-          cur.appliance ? cur.appliance.replace("_", " ") + (cur.temp_f ? ` ${cur.temp_f}°F` : "") : null,
-          cur.note ? "note: " + cur.note : null].filter(Boolean).join(" · ");
-        if (meta) card.appendChild(el("div", "step-meta", meta));
-        const next = r.steps.find((st) => st.n > cur.n && st.status === "pending");
-        if (next) card.appendChild(el("div", "step-next", `Then: ${next.text}`));
-      } else {
-        card.appendChild(el("div", "step-now", "All steps done"));
-      }
+      if (!cur) card.appendChild(el("div", "step-now", "All steps done"));
       if (r.changes) card.appendChild(el("div", "changes", r.changes));
 
       const actions = el("div", "actions");
-      if (cur) {
-        const b = el("button", "small", `Done with step ${cur.n}`);
-        b.onclick = () => uiTool("POST", `/session/${app.sessionId}/steps/${cur.id}/complete`);
-        actions.appendChild(b);
-      }
       const rm = el("button", "small danger", "Remove");
       rm.onclick = () => uiTool("DELETE", `/session/${app.sessionId}/recipes/${r.id}`);
       actions.appendChild(rm);

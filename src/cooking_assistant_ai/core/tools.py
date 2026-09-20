@@ -566,26 +566,7 @@ def start_task(ctx: ToolContext, task_id: Any = None) -> Tuple[str, Optional[str
     t.start_at = ctx.now
     _resolve(ctx)
 
-    # The timer comes with the task. Told to set one, the model forgot most of the time: over
-    # a real cook, five of nine timers existed only because the cook noticed and asked, one of
-    # them after "I don't see a timer for the tofu" twice. Something on a hob for a known
-    # length of time needs a countdown whether or not anyone remembers to ask for one.
-    # Appliances that finish when they finish are excluded - a timer on those means nothing -
-    # and an existing timer for this task is left alone.
-    started = ""
-    if t.duration_s and not t.awaits_cook:
-        already = any(tm.task_id == t.id for tm in ctx.session.running_timers())
-        if not already:
-            timer = Timer(
-                id=ctx.session.new_id("tm"), label=t.label, task_id=t.id,
-                step_id=t.step_ids[0] if t.step_ids else None,
-                end_at=ctx.now + timedelta(seconds=t.duration_s),
-                on_complete_hint=None, created_at=ctx.now,
-            )
-            ctx.session.timers[timer.id] = timer
-            started = f"; timer set for {fmt_dur(t.duration_s)}, goes off {fmt_time(timer.end_at)}"
-    return "timeline", (f"{t.label} started at {fmt_time(ctx.now)}, "
-                        f"ends {fmt_time(t.end_at)}{started}")
+    return "timeline", f"{t.label} started at {fmt_time(ctx.now)}, ends {fmt_time(t.end_at)}"
 
 
 @tool(

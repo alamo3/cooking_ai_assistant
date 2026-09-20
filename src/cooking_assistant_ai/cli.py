@@ -234,8 +234,9 @@ async def classify_steps(args: argparse.Namespace) -> None:
         "properties": {
             "steps": {"type": "array", "items": {
                 "type": "object",
-                "properties": {"n": {"type": "integer"}, "prep": {"type": "boolean"}},
-                "required": ["n", "prep"]}},
+                "properties": {"n": {"type": "integer"}, "prep": {"type": "boolean"},
+                               "uses": {"type": "array", "items": {"type": "integer"}}},
+                "required": ["n", "prep", "uses"]}},
             "ingredients": {"type": "array", "items": {
                 "type": "object",
                 "properties": {"n": {"type": "integer"}, "name": {"type": "string"},
@@ -293,29 +294,46 @@ async def classify_steps(args: argparse.Namespace) -> None:
         try:
             answer = json.loads(await llm.complete([{"role": "user", "content":
                 f"Recipe: {recipe.title}\n\n"
-                "STEPS - repeat each step's number and answer prep: is it preparation done "
-                "before anything is on the heat (chopping, rinsing, peeling, measuring, "
-                "seasoning raw ingredients, making a marinade)? Cooking, resting, assembling "
-                "and serving are not prep. Judge each step whole: 'Tuck the garlic and lemon "
-                "halves around the thighs' is cooking despite the word halves.\n\n"
-                f"{step_lines}\n\n"
                 "INGREDIENTS - repeat each ingredient's number and name exactly as written, "
                 "then key: the plain grocery name, lowercase, no amount, preparation or "
                 "brand. 'Medium Onion (White, Yellow or Brown, Chopped)' and 'onions' are "
                 "both 'onion'; '1 19oz can black beans' is 'black beans'. Same item, same "
                 "key; different items, different keys - ground coriander seed is not fresh "
                 "coriander leaf.\n\n"
-                f"{item_lines}"}], json_schema=recipe_schema))
+                f"{item_lines}\n\n"
+                "STEPS - repeat each step's number, then:\n"
+                "prep: is it preparation done before anything is on the heat (chopping, "
+                "rinsing, peeling, measuring, seasoning raw ingredients, making a marinade)? "
+                "Cooking, resting, assembling and serving are not prep. Judge each step "
+                "whole: 'Tuck the garlic and lemon halves around the thighs' is cooking "
+                "despite the word halves.\n"
+                "uses: the numbers of the ingredients above that this step calls for, as a "
+                "list, empty when none. Go by what the step does, not by whether it repeats "
+                "the ingredient's exact words: 'mash the block of tofu' uses the firm tofu, "
+                "'season with salt' uses the kala namak. An ingredient handled in several "
+                "steps belongs to each of them.\n\n"
+                f"{step_lines}"}], json_schema=recipe_schema))
         except ValueError:
             print(f"  {recipe.id} {recipe.title}: unreadable answer, left alone")
             continue
 
-        by_n = {}
+        # Which ingredients a step calls for is the same kind of question as whether it is
+        # prep: the model reads the sentence and nothing matches words. It was never asked
+        # before, so every imported recipe had none - and mass prep is grouped by exactly
+        # this field, which is why chopping was never batched across dishes.
+        by_n, uses_n = {}, {}
         for row in answer.get("steps") or []:
-            if isinstance(row, dict) and isinstance(row.get("n"), int):
-                by_n[row["n"]] = bool(row.get("prep"))
-        new_steps = tuple(_replace(s, prep=by_n[n]) if n in by_n else s
-                          for n, s in enumerate(recipe.steps, start=1))
+            if not isinstance(row, dict) or not isinstance(row.get("n"), int):
+                continue
+            by_n[row["n"]] = bool(row.get("prep"))
+            picked = [recipe.ingredients[i - 1].id for i in (row.get("uses") or [])
+                      if isinstance(i, int) and 1 <= i <= len(recipe.ingredients)]
+            uses_n[row["n"]] = tuple(dict.fromkeys(picked))
+        new_steps = tuple(
+            _replace(s, prep=by_n.get(n, s.prep),
+                     ingredient_ids=uses_n.get(n) or s.ingredient_ids)
+            if n in by_n else s
+            for n, s in enumerate(recipe.steps, start=1))
 
         # Matched on the name the model echoed back, so a shifted or partial answer drops the
         # rows it got wrong instead of relabelling the wrong ingredient.
@@ -374,6 +392,7 @@ async def classify_steps(args: argparse.Namespace) -> None:
 
         store.put_recipe(_replace(recipe, steps=new_steps, ingredients=tuple(new_items)))
         marks = "".join("P" if s.prep else "." for s in new_steps)
+        linked = sum(1 for s in new_steps if s.ingredient_ids)
         found = sorted({c for i in new_items for c in (i.contains or ())})
         maybe_all = sorted({c for i in new_items for c in (i.may_contain or ())})
         note = f"   contains: {', '.join(found)}" if found else ""
@@ -382,7 +401,8 @@ async def classify_steps(args: argparse.Namespace) -> None:
             note += f"   ({len(flagged)} re-asked, {demoted} demoted on disagreement)"
         if mismatched:
             note += f"   ({mismatched} answer(s) did not match, skipped)"
-        print(f"  {recipe.id} {recipe.title}: {marks}{note}")
+        print(f"  {recipe.id} {recipe.title}: {marks}  "
+              f"{linked}/{len(new_steps)} linked{note}")
 
     close = getattr(llm, "aclose", None)
     if close:
