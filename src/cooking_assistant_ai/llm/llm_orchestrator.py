@@ -136,6 +136,11 @@ def order_tool_calls(calls: List[ToolCallRequest]) -> List[ToolCallRequest]:
     return ordered
 
 
+def is_nothing(text: str) -> str:
+    """The model's way of saying it has nothing to add. Never spoken, on any turn."""
+    return (text or "").strip().rstrip(".!").strip().upper() == "NOTHING"
+
+
 class SpeechGate:
     """Streams finished sentences to the output, but holds everything from the first
     sentence that claims an action no tool has backed yet. Held sentences are released
@@ -153,6 +158,7 @@ class SpeechGate:
         self.held: List[str] = []
         self.spoken: List[str] = []
         self.started = False
+        self.said_nothing = False  # the model declined to speak, on any turn
 
     async def _emit(self, sentence: str) -> None:
         self.spoken.append(sentence)
@@ -164,6 +170,11 @@ class SpeechGate:
         await self.output(Speech(sentence + " ", proactive=False))
 
     async def _sentence(self, sentence: str) -> None:
+        if is_nothing(sentence):
+            # Reached the cook as the spoken word "Nothing" when a stray transcript gave the
+            # model nothing worth answering. It is a signal to the orchestrator, not speech.
+            self.said_nothing = True
+            return
         if self.held or unjustified_claims(sentence, self.tools_ok, self.session):
             self.held.append(sentence)
         else:
@@ -439,7 +450,7 @@ class Orchestrator:
 
         full = gate.spoken_text()
         if proactive:
-            if not full or full.upper().rstrip(".!") == "NOTHING" or full.upper().startswith("NOTHING"):
+            if not full or is_nothing(full) or full.upper().startswith("NOTHING"):
                 await self._notice("idle turn suppressed", "debug")
                 self.journal.note("turn", seconds=round(time.monotonic() - started, 1),
                                   tools=gate.dispatched, suppressed=True)
@@ -450,6 +461,8 @@ class Orchestrator:
 
         # The transcript is written after generating, so assemble_context never sees this
         # turn's own prompt twice.
+        if gate.said_nothing and not full and not proactive:
+            await self._notice("model had nothing to say to that; not spoken", "debug")
         session.transcript.append(Turn(role="user", text=prompt, at=now))
         if full:
             session.transcript.append(Turn(role="assistant", text=full, at=self.clock.now()))

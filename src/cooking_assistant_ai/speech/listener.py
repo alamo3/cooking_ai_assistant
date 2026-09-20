@@ -40,9 +40,40 @@ def clean_transcript(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+# Whisper learned its captions from YouTube and pays that back by signing off when handed
+# silence. Two real cooks collected "I'll see you next time!" and "I'll see you in the next
+# video." from an empty kitchen. The family is open-ended, so it is matched as a prefix
+# rather than added to one by one.
+_SIGN_OFFS = re.compile(
+    r"^(?:i'?ll see you|see you (?:next|in|again|soon)|thanks? (?:for|so much for) watching"
+    r"|don'?t forget to|please (?:subscribe|like)|subtitles? (?:by|provided)"
+    r"|transcri(?:bed|ption) by|stay tuned|that'?s (?:it|all) for)", re.I)
+
+
 def is_hallucination(text: str) -> bool:
     norm = re.sub(r"[^a-z0-9 ]", "", text.lower()).strip()
-    return not norm or norm in _HALLUCINATIONS or len(norm) < 2
+    if not norm or norm in _HALLUCINATIONS or len(norm) < 2:
+        return True
+    return bool(_SIGN_OFFS.match(text.strip()))
+
+
+# Whisper's own numbers, not a guess about the words. no_speech_prob above this means the
+# decoder itself thought the audio held no speech; a mean token log-probability below the
+# floor means it was guessing. Deliberately loose: a cook talking over an extractor fan
+# scores well clear of both, and dropping a real instruction is far worse than passing on a
+# stray one, which the model can simply decline to answer.
+UNSURE_NO_SPEECH = float(os.environ.get("COOK_STT_NO_SPEECH_MAX", "0.8"))
+UNSURE_LOGPROB = float(os.environ.get("COOK_STT_LOGPROB_MIN", "-1.2"))
+
+
+def too_unsure(no_speech: Optional[float], logprob: Optional[float]) -> bool:
+    """True when the decoder's own confidence says this was probably not speech.
+
+    None means the backend did not report it, which is never read as bad.
+    """
+    if no_speech is not None and no_speech > UNSURE_NO_SPEECH:
+        return True
+    return logprob is not None and logprob < UNSURE_LOGPROB
 
 
 def _words(text: str) -> Set[str]:
@@ -186,7 +217,8 @@ class Listener:
             await self._emit("dropped", {"reason": "too short", "seconds": round(speech_samples / self.rate, 2)})
             return
         try:
-            text = clean_transcript(await self.stt.transcribe(pcm, self.rate))
+            heard = await self.stt.listen(pcm, self.rate)
+            text = clean_transcript(heard.text)
         except Exception as e:
             log.exception("transcription failed")
             await self._emit("error", {"text": f"transcription failed: {e}"})
@@ -194,6 +226,14 @@ class Listener:
         if is_hallucination(text):
             self.dropped += 1
             await self._emit("dropped", {"reason": "empty", "text": text})
+            return
+        if too_unsure(heard.no_speech, heard.logprob):
+            self.dropped += 1
+            log.info("unsure transcript dropped (no_speech=%s logprob=%s): %r",
+                     heard.no_speech, heard.logprob, text[:80])
+            await self._emit("dropped", {"reason": "unsure", "text": text,
+                                         "no_speech": heard.no_speech,
+                                         "logprob": heard.logprob})
             return
         if started_while_playing and self.is_echo(text):
             self.dropped += 1

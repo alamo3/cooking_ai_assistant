@@ -248,3 +248,28 @@ async def test_a_cook_side_nudge_does_not_make_it_say_everything_twice(cook):
     assert any("drifted" in n for n in k.notices), "the nudge should have fired"
     whole = "".join(k.spoken)
     assert whole.count("Lovely, the onions are ready.") == 1, whole
+
+
+async def test_a_stray_transcript_never_makes_it_say_nothing_out_loud(cook):
+    """A podcast playing in the kitchen reached the model as a cook turn. It answered with
+    its no-op token, which was only suppressed on idle turns, so the tablet said the word
+    "Nothing" at the cook."""
+    o, llm, k = cook
+    llm.push(text_chunks("NOTHING"))
+    await o.submit("A core user asks, is AI in education at a crisis level?")
+    await o.wait_idle()
+
+    assert "".join(k.spoken).strip() == "", f"spoke: {k.spoken!r}"
+    assert not any(t.role == "assistant" and "NOTHING" in t.text
+                   for t in k.session.transcript), "the no-op leaked into the history"
+
+
+async def test_a_real_answer_after_a_stray_one_still_comes_through(cook):
+    o, llm, k = cook
+    llm.push(text_chunks("NOTHING"))
+    await o.submit("I'll see you in the next video.")
+    await o.wait_idle()
+    llm.push(text_chunks("The rice needs another five minutes."))
+    await o.submit("how's the rice?")
+    await o.wait_idle()
+    assert "another five minutes" in "".join(k.spoken)

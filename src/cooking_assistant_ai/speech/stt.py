@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 import wave
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List, Optional, Sequence
 
@@ -73,9 +74,34 @@ def kitchen_prompt(session=None, base: str = "") -> str:
     return text[:900]  # whisper ignores an over-long prompt, and it costs decode time
 
 
+@dataclass(frozen=True)
+class Heard:
+    """What the decoder returned, and how sure it was.
+
+    `no_speech` is whisper's own probability that the audio contained no speech at all, and
+    `logprob` its mean token log-probability. A hallucination on silence usually scores badly
+    on one or both; a cook talking over an extractor fan scores fine. Either may be None when
+    a backend does not report it, and None must never be read as "bad".
+    """
+    text: str
+    no_speech: Optional[float] = None
+    logprob: Optional[float] = None
+
+
+def _mean(rows, field: str) -> Optional[float]:
+    """Mean of a per-segment number, or None when the backend did not report it."""
+    vals = [float(r[field]) for r in rows
+            if isinstance(r, dict) and isinstance(r.get(field), (int, float))]
+    return sum(vals) / len(vals) if vals else None
+
+
 class STT:
     async def transcribe(self, pcm16: bytes, sample_rate: int = 16000) -> str:  # pragma: no cover
         raise NotImplementedError
+
+    async def listen(self, pcm16: bytes, sample_rate: int = 16000) -> "Heard":
+        """Transcribe and report confidence. Backends that can do better override this."""
+        return Heard(await self.transcribe(pcm16, sample_rate))
 
     async def warm(self) -> None:
         if self.available:
@@ -221,8 +247,14 @@ class WhisperCppSTT(STT):
     async def transcribe(self, pcm16: bytes, sample_rate: int = 16000) -> str:
         if not self._ready:
             await self.start()
+        return (await self.listen(pcm16, sample_rate)).text
+
+    async def listen(self, pcm16: bytes, sample_rate: int = 16000) -> Heard:
+        if not self._ready:
+            await self.start()
         wav = pcm16_to_wav(_resample_pcm16(pcm16, sample_rate), 16000)
-        data = {"response_format": "json", "temperature": "0.0", "temperature_inc": "0.0",
+        # verbose_json costs nothing extra to decode and carries no_speech_prob per segment.
+        data = {"response_format": "verbose_json", "temperature": "0.0", "temperature_inc": "0.0",
                 "no_timestamps": "true", "language": "en"}
         if self.prompt:
             data["prompt"] = self.prompt
@@ -231,7 +263,11 @@ class WhisperCppSTT(STT):
         body = r.json()
         if "error" in body:
             raise RuntimeError(f"whisper-server: {body['error']}")
-        return str(body.get("text", "")).strip()
+        segments = [x for x in (body.get("segments") or []) if isinstance(x, dict)]
+        text = str(body.get("text", "")).strip()
+        if not text and segments:
+            text = " ".join(str(x.get("text", "")).strip() for x in segments).strip()
+        return Heard(text, _mean(segments, "no_speech_prob"), _mean(segments, "avg_logprob"))
 
     async def warm(self) -> None:
         await self.start()
@@ -265,6 +301,23 @@ class FasterWhisperSTT(STT):
         def _run() -> str:
             segments, _info = self._model.transcribe(audio, language="en", vad_filter=True, beam_size=1)
             return " ".join(seg.text.strip() for seg in segments).strip()
+
+        return await asyncio.get_event_loop().run_in_executor(None, _run)
+
+    async def listen(self, pcm16: bytes, sample_rate: int = 16000) -> Heard:
+        import numpy as np  # type: ignore
+
+        audio = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
+        audio = self._to_16k(audio, sample_rate)
+
+        def _run() -> Heard:
+            segments, _info = self._model.transcribe(audio, language="en", vad_filter=True,
+                                                     beam_size=1)
+            rows = [{"text": seg.text,
+                     "no_speech_prob": getattr(seg, "no_speech_prob", None),
+                     "avg_logprob": getattr(seg, "avg_logprob", None)} for seg in segments]
+            text = " ".join(str(r["text"]).strip() for r in rows).strip()
+            return Heard(text, _mean(rows, "no_speech_prob"), _mean(rows, "avg_logprob"))
 
         return await asyncio.get_event_loop().run_in_executor(None, _run)
 
