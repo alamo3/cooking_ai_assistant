@@ -58,16 +58,22 @@ async def test_tool_round_trip_and_context(orch):
     second_call = llm.calls[1]
     assert second_call[-1]["role"] == "tool" and "rice simmering" in second_call[-1]["content"]
     assert any(isinstance(e, StateChanged) for e in out.events)
-    # context: system prompt carries state, transcript recorded
-    first_system = llm.calls[0][0]["content"]
-    assert "RECIPE: Roast Chicken Thighs" in first_system and "TIMELINE" in first_system
+    # context: the state block rides last, just before what the cook said, so the system
+    # prompt and the conversation in front of it stay cacheable between turns
+    first_call = llm.calls[0]
+    assert first_call[0]["content"].startswith("You are a hands-free kitchen")
+    state = first_call[-2]["content"]
+    assert state.startswith("[SYSTEM] State as of right now")
+    assert "RECIPE: Roast Chicken Thighs" in state and "TIMELINE" in state
     assert o.session.transcript[-1].role == "assistant"
     # next turn sees the transcript verbatim
     llm.push("Sure.")
     await o.submit("thanks")
     await o.wait_idle()
     roles = [m["role"] for m in llm.calls[2]]
-    assert roles == ["system", "user", "assistant", "user"]
+    assert roles == ["system", "user", "assistant", "user", "user"]
+    assert llm.calls[2][1]["content"] == "the rice is simmering, set a timer"
+    assert llm.calls[2][-1]["content"] == "thanks"
 
 
 async def test_rejected_tool_is_fed_back(orch):
@@ -252,9 +258,14 @@ async def test_current_prompt_is_not_duplicated_in_the_next_context(orch):
     await o.submit("first question"); await o.wait_idle()
     await o.submit("second question"); await o.wait_idle()
     roles = [m["role"] for m in llm.calls[1]]
-    assert roles == ["system", "user", "assistant", "user"]
+    # system, the whole conversation so far, the state block, then what was just said
+    assert roles == ["system", "user", "assistant", "user", "user"]
     assert llm.calls[1][1]["content"] == "first question"
+    assert llm.calls[1][2]["content"] == "Sure."
+    assert llm.calls[1][-2]["content"].startswith("[SYSTEM] State as of right now")
     assert llm.calls[1][-1]["content"] == "second question"
+    # the current prompt appears once, not also as history
+    assert sum(1 for m in llm.calls[1] if m["content"] == "second question") == 1
 
 
 async def test_leaked_template_tokens_are_never_spoken(orch):
@@ -346,44 +357,3 @@ def test_sentence_splitter_streams_early():
     assert out == ["Put the rice on.", "Then sear the chicken for 1.5 min."]
     assert s.flush() == ["Done!"]
     assert s.feed("Add 2 tbsp. of oil now. ") == ["Add 2 tbsp. of oil now."]
-
-
-async def test_walking_the_cook_to_a_later_step_prompts_recording_the_earlier_ones(orch):
-    """A whole recorded cook advanced three steps and called mark_complete not once.
-
-    Nothing the cook said implied it - the model was the one moving them along, so the
-    giveaway has to be the reply itself, matched against the recipe's own step text.
-    """
-    o, llm, out = orch
-    llm.push(
-        "Flip the thighs now, and tuck the garlic, thyme and lemon halves around them.",
-        call("mark_complete", step_ids=["r001-s1", "r001-s2", "r001-s3"]),
-        "Marked the searing done.",
-    )
-    await o.submit("what now?")
-    await o.wait_idle()
-    assert [t.name for t in out.tools()] == ["mark_complete"]
-    assert "r001-s1" in o.session.completed_steps
-    nudges = [e for e in out.events if isinstance(e, Notice) and "drifted" in e.text]
-    assert nudges and "step 1" in nudges[0].text and "Roast Chicken Thighs" in nudges[0].text
-
-
-async def test_staying_on_the_current_step_is_not_nudged(orch):
-    o, llm, out = orch
-    llm.push("Start by preheating the oven to 425.")
-    await o.submit("what now?")
-    await o.wait_idle()
-    assert out.tools() == []
-    assert not [e for e in out.events if isinstance(e, Notice) and "drifted" in e.text]
-
-
-async def test_a_turn_that_recorded_the_step_is_not_nudged(orch):
-    """Calling mark_complete is the whole point; having done it, no nudge is due."""
-    o, llm, out = orch
-    llm.push(
-        call("mark_complete", step_ids=["r001-s1", "r001-s2", "r001-s3"]),
-        "Flip the thighs and tuck the garlic, thyme and lemon halves around them.",
-    )
-    await o.submit("done with the searing")
-    await o.wait_idle()
-    assert not [e for e in out.events if isinstance(e, Notice) and "drifted" in e.text]

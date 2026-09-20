@@ -1,12 +1,12 @@
-"""Moving the cook on is an action, not something inferred from what was said.
+"""Moving the cook on is an action, and it can only move one step.
 
-Word matching against step text could notice the model had advanced without recording it, but
-only after the fact and only when the wording happened to overlap. advance_step makes it the
-same kind of thing as setting a timer: the model does it, and the state changes because it
-did.
+advance_step used to record every earlier step of the recipe as done, so one call to step 3
+silently claimed steps 1 and 2 had happened. Over a real cook that marched through a jambalaya
+nobody had made, and in the opening seconds it advanced three different recipes before
+anything had been cooked at all. A step is done because the cook did it, not because the model
+moved past it.
 """
 from __future__ import annotations
-
 
 from cooking_assistant_ai.core.tools import dispatch
 
@@ -15,110 +15,158 @@ def call(ctx, **args):
     return dispatch(ctx, "advance_step", args)
 
 
-def test_advancing_records_every_earlier_step(ctx):
+def only(ctx):
+    """Leave one recipe loaded, so a bare step number is unambiguous."""
+    for rid in ("r002", "r003"):
+        dispatch(ctx, "unload_recipe", {"recipe_id": rid})
+    return ctx
+
+
+# ----------------------------------------------------------------- it cannot invent progress
+
+def test_it_will_not_jump_over_open_steps(ctx):
+    """The jambalaya failure: a jump to step 3 from a cold start recorded steps 1 and 2."""
     out = call(ctx, step_id="3", recipe_id="r001")
-    assert out.ok
+    assert not out.ok
+    assert "still open" in out.reason
+    assert ctx.session.completed_steps == set()
+
+
+def test_the_refusal_names_what_is_in_the_way(ctx):
+    out = call(ctx, step_id="4", recipe_id="r001")
+    assert "1, 2, 3" in out.reason
+    assert "mark_complete" in out.reason and "skip_step" in out.reason
+
+
+def test_moving_one_step_records_exactly_one(ctx):
+    assert call(ctx, step_id="1", recipe_id="r001").ok
+    assert ctx.session.completed_steps == set()        # standing on it is not doing it
+    assert call(ctx, step_id="2", recipe_id="r001").ok
+    assert ctx.session.completed_steps == {"r001-s1"}
+    assert call(ctx, step_id="3", recipe_id="r001").ok
     assert ctx.session.completed_steps == {"r001-s1", "r001-s2"}
 
 
+def test_staying_on_the_current_step_records_nothing(ctx):
+    call(ctx, step_id="2", recipe_id="r001")
+    before = set(ctx.session.completed_steps)
+    assert call(ctx, step_id="2", recipe_id="r001").ok
+    assert ctx.session.completed_steps == before
+
+
+def test_a_skipped_step_does_not_block_the_one_after_it(ctx):
+    dispatch(ctx, "skip_step", {"step_id": "r001-s1", "reason": "oven already hot"})
+    assert call(ctx, step_id="2", recipe_id="r001").ok
+    assert "r001-s1" not in ctx.session.completed_steps
+
+
+def test_skipping_clears_the_way_for_a_further_step(ctx):
+    for sid in ("r001-s1", "r001-s2"):
+        dispatch(ctx, "skip_step", {"step_id": sid, "reason": "done earlier"})
+    assert call(ctx, step_id="3", recipe_id="r001").ok
+    assert ctx.session.completed_steps == set()
+
+
+def test_going_backwards_is_refused_with_a_way_forward(ctx):
+    call(ctx, step_id="2", recipe_id="r001")
+    out = call(ctx, step_id="1", recipe_id="r001")
+    assert not out.ok
+    assert "already recorded as done" in out.reason and "mark_complete" in out.reason
+
+
+# ------------------------------------------------------------------ what it hands back
+
 def test_the_step_it_returns_is_the_one_to_read_out(ctx):
+    dispatch(ctx, "mark_complete", {"step_ids": ["r001-s1", "r001-s2"]})
     out = call(ctx, step_id="3", recipe_id="r001")
-    assert "step 3 of 7" in out.message
-    assert "Sear the thighs" in out.message
+    assert "step 3 of 7" in out.message and "Sear the thighs" in out.message
 
 
 def test_it_carries_the_amounts_so_they_need_not_be_recalled(ctx):
     """"How much, and for what dish" was the thing the cook kept having to ask for."""
+    dispatch(ctx, "mark_complete", {"step_ids": ["r001-s1", "r001-s2"]})
     out = call(ctx, step_id="3", recipe_id="r001")
     assert "needs" in out.message and "butter" in out.message
 
 
 def test_amounts_follow_a_scaled_recipe(ctx):
     assert dispatch(ctx, "scale", {"recipe_id": "r001", "factor": 2}).ok
+    dispatch(ctx, "mark_complete", {"step_ids": ["r001-s1", "r001-s2"]})
     out = call(ctx, step_id="3", recipe_id="r001")
-    assert out.ok
-    assert "4 tbsp butter" in out.message
+    assert out.ok and "4 tbsp butter" in out.message
 
 
-def test_advancing_again_to_the_same_step_is_harmless(ctx):
-    call(ctx, step_id="3", recipe_id="r001")
-    before = set(ctx.session.completed_steps)
-    out = call(ctx, step_id="3", recipe_id="r001")
-    assert out.ok and ctx.session.completed_steps == before
-
-
-def test_going_backwards_is_refused_with_a_way_forward(ctx):
-    call(ctx, step_id="4", recipe_id="r001")
-    out = call(ctx, step_id="2", recipe_id="r001")
-    assert not out.ok
-    assert "already recorded as done" in out.reason
-    assert "mark_complete" in out.reason          # the rejection says what to do instead
-    assert "r001-s2" in ctx.session.completed_steps  # and changed nothing
-
-
-def test_a_skipped_step_is_refused_rather_than_silently_reopened(ctx):
-    dispatch(ctx, "skip_step", {"step_id": "r001-s2", "reason": "no thyme"})
-    out = call(ctx, step_id="2", recipe_id="r001")
-    assert not out.ok and "skipped" in out.reason
-
-
-def test_skipped_steps_are_not_swept_up_as_done(ctx):
-    dispatch(ctx, "skip_step", {"step_id": "r001-s2", "reason": "no thyme"})
-    assert call(ctx, step_id="4", recipe_id="r001").ok
-    assert "r001-s2" not in ctx.session.completed_steps
-    assert "r001-s1" in ctx.session.completed_steps
-
+# ------------------------------------------------------------------------- how it is called
 
 def test_a_step_id_works_without_naming_the_recipe(ctx):
-    out = call(ctx, step_id="r001-s3")
-    assert out.ok and ctx.session.completed_steps == {"r001-s1", "r001-s2"}
+    assert call(ctx, step_id="r001-s1").ok
+
+
+def test_an_integer_step_id_is_accepted(ctx):
+    """Models send numbers as numbers; a type mismatch should not be a refusal."""
+    assert call(ctx, step_id=1, recipe_id="r001").ok
+
+
+def test_a_bare_step_number_works_when_one_dish_is_on(ctx):
+    assert call(only(ctx), step_id=1).ok
+
+
+def test_a_bare_step_number_is_refused_when_it_is_genuinely_ambiguous(ctx):
+    out = call(ctx, step_id=1)
+    assert not out.ok and "ambiguous" in out.reason
 
 
 def test_an_unknown_step_is_refused(ctx):
-    out = call(ctx, step_id="99", recipe_id="r001")
-    assert not out.ok
+    assert not call(ctx, step_id="99", recipe_id="r001").ok
 
 
-def test_advancing_past_a_task_completes_it(ctx, prepped):
-    """The searing task is finished by walking off the end of its steps, not only by
-    mark_complete, or the timeline would still show it running."""
+# --------------------------------------------------------------------- tasks and timers
+
+def test_finishing_a_tasks_last_step_completes_it(ctx, prepped):
     add = dispatch(ctx, "add_task", {"recipe_id": "r001", "label": "sear thighs",
                                      "step_ids": ["r001-s3"], "duration_s": 300,
                                      "appliance": "stovetop"})
     assert add.ok
     task = next(t for t in ctx.session.tasks.values() if t.label == "sear thighs")
+    dispatch(ctx, "mark_complete", {"step_ids": ["r001-s1", "r001-s2"]})
     dispatch(ctx, "start_task", {"task_id": task.id})
-    out = call(ctx, step_id="5", recipe_id="r001")
-    assert out.ok
+    assert call(ctx, step_id="4", recipe_id="r001").ok
     assert ctx.session.tasks[task.id].status == "complete"
-
-
-def test_its_timers_stop_when_it_does(ctx, prepped):
-    add = dispatch(ctx, "add_task", {"recipe_id": "r001", "label": "sear thighs",
-                                     "step_ids": ["r001-s3"], "duration_s": 300,
-                                     "appliance": "stovetop"})
-    task = next(t for t in ctx.session.tasks.values() if t.label == "sear thighs")
-    dispatch(ctx, "start_task", {"task_id": task.id})
-    dispatch(ctx, "set_timer", {"label": "thighs searing", "duration_s": 300,
-                                "task_id": task.id, "on_complete_hint": "flip them"})
-    assert call(ctx, step_id="5", recipe_id="r001").ok
     assert not [t for t in ctx.session.timers.values() if t.status == "running"]
 
 
-def test_a_bare_step_number_works_when_one_dish_is_on(ctx):
-    """The obvious call when there is only one recipe; refusing it would be pedantry."""
-    for rid in ("r002", "r003"):
-        dispatch(ctx, "unload_recipe", {"recipe_id": rid})
-    out = call(ctx, step_id=3)
-    assert out.ok and ctx.session.completed_steps == {"r001-s1", "r001-s2"}
+def test_starting_a_task_starts_its_timer(ctx, prepped):
+    """Told to set timers, the model forgot: over a real cook five of nine timers existed
+    only because the cook noticed and asked for them."""
+    assert dispatch(ctx, "add_task", {"recipe_id": "r001", "label": "sear thighs",
+                                      "step_ids": ["r001-s3"], "duration_s": 300,
+                                      "appliance": "stovetop"}).ok
+    task = next(t for t in ctx.session.tasks.values() if t.label == "sear thighs")
+    dispatch(ctx, "mark_complete", {"step_ids": ["r001-s1", "r001-s2"]})
+    out = dispatch(ctx, "start_task", {"task_id": task.id})
+    assert out.ok and "timer set" in out.message
+    running = [t for t in ctx.session.timers.values() if t.status == "running"]
+    assert len(running) == 1 and running[0].task_id == task.id
 
 
-def test_a_bare_step_number_is_refused_when_it_is_genuinely_ambiguous(ctx):
-    out = call(ctx, step_id=3)
-    assert not out.ok
-    assert "ambiguous" in out.reason and "r001" in out.reason
+def test_it_does_not_add_a_second_timer_to_a_task(ctx, prepped):
+    assert dispatch(ctx, "add_task", {"recipe_id": "r001", "label": "sear thighs",
+                                      "step_ids": ["r001-s3"], "duration_s": 300,
+                                      "appliance": "stovetop"}).ok
+    task = next(t for t in ctx.session.tasks.values() if t.label == "sear thighs")
+    dispatch(ctx, "mark_complete", {"step_ids": ["r001-s1", "r001-s2"]})
+    dispatch(ctx, "set_timer", {"label": "thighs searing", "duration_s": 300,
+                                "task_id": task.id, "on_complete_hint": "flip"})
+    assert dispatch(ctx, "start_task", {"task_id": task.id}).ok
+    assert len([t for t in ctx.session.timers.values() if t.status == "running"]) == 1
 
 
-def test_an_integer_step_id_is_accepted(ctx):
-    """Models send numbers as numbers; a type mismatch should not be a refusal."""
-    assert call(ctx, step_id=3, recipe_id="r001").ok
+def test_an_appliance_that_finishes_when_it_finishes_gets_no_timer(ctx, prepped):
+    """A rice cooker timer would go off at a time that means nothing."""
+    assert dispatch(ctx, "add_task", {"recipe_id": "r002", "label": "rice",
+                                      "step_ids": ["r002-s2"], "duration_s": 1200,
+                                      "appliance": "rice_cooker"}).ok
+    task = next(t for t in ctx.session.tasks.values() if t.label == "rice")
+    dispatch(ctx, "mark_complete", {"step_ids": ["r002-s1"]})
+    assert dispatch(ctx, "start_task", {"task_id": task.id}).ok
+    assert not [t for t in ctx.session.timers.values() if t.status == "running"]

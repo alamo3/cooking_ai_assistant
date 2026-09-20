@@ -565,7 +565,27 @@ def start_task(ctx: ToolContext, task_id: Any = None) -> Tuple[str, Optional[str
     t.actual_start = ctx.now
     t.start_at = ctx.now
     _resolve(ctx)
-    return "timeline", f"{t.label} started at {fmt_time(ctx.now)}, ends {fmt_time(t.end_at)}"
+
+    # The timer comes with the task. Told to set one, the model forgot most of the time: over
+    # a real cook, five of nine timers existed only because the cook noticed and asked, one of
+    # them after "I don't see a timer for the tofu" twice. Something on a hob for a known
+    # length of time needs a countdown whether or not anyone remembers to ask for one.
+    # Appliances that finish when they finish are excluded - a timer on those means nothing -
+    # and an existing timer for this task is left alone.
+    started = ""
+    if t.duration_s and not t.awaits_cook:
+        already = any(tm.task_id == t.id for tm in ctx.session.running_timers())
+        if not already:
+            timer = Timer(
+                id=ctx.session.new_id("tm"), label=t.label, task_id=t.id,
+                step_id=t.step_ids[0] if t.step_ids else None,
+                end_at=ctx.now + timedelta(seconds=t.duration_s),
+                on_complete_hint=None, created_at=ctx.now,
+            )
+            ctx.session.timers[timer.id] = timer
+            started = f"; timer set for {fmt_dur(t.duration_s)}, goes off {fmt_time(timer.end_at)}"
+    return "timeline", (f"{t.label} started at {fmt_time(ctx.now)}, "
+                        f"ends {fmt_time(t.end_at)}{started}")
 
 
 @tool(
@@ -695,7 +715,9 @@ def _settle_tasks(ctx: ToolContext) -> List[str]:
 
 @tool(
     "advance_step",
-    "Move the cook on to a recipe step, recording every earlier step of that recipe as done. "
+    "Move the cook on to the next step of a recipe, recording the step they were on as "
+    "done. It moves one step at a time and refuses to jump over open steps, so it can "
+    "never record cooking that did not happen. "
     "Call this whenever you tell the cook to begin a new step - it is the only thing that moves "
     "the tablet on, and until you call it they are still looking at the previous one. Returns "
     "the step with their swaps applied and the amounts it needs, so read it back from here "
@@ -739,9 +761,24 @@ def advance_step(ctx: ToolContext, step_id: Any = None, recipe_id: Any = None) -
                         f"is doing it again, say so and use mark_complete on the steps that "
                         f"really are finished instead")
 
-    behind = [st.id for st in recipe.steps[:n - 1]
-              if st.id not in s.completed_steps and st.id not in ov.skipped_steps]
-    s.completed_steps.update(behind)
+    # Only one step forward, ever. This used to sweep every earlier step into completed_steps
+    # so a forgetful model could catch up, and the cost of that convenience was a whole
+    # recipe recorded as cooked that nobody had touched. A step is done because the cook did
+    # it, not because the model moved past it.
+    open_steps = [st for st in recipe.steps
+                  if st.id not in s.completed_steps and st.id not in ov.skipped_steps]
+    standing_on = open_steps[0] if open_steps else None
+    behind: List[str] = []
+    if standing_on is not None and standing_on.id != sid:
+        blocking = [st for st in open_steps if recipe.step_index(st.id) < n]
+        if len(blocking) > 1:
+            listed = ", ".join(str(recipe.step_index(st.id)) for st in blocking)
+            raise ToolError(
+                f"cannot jump to step {n} of {recipe.title}: steps {listed} are still open. "
+                f"Move them on one at a time as the cook does them, or mark_complete / "
+                f"skip_step the ones they are not doing")
+        behind = [st.id for st in blocking]
+        s.completed_steps.update(behind)
     finished = _settle_tasks(ctx)
 
     text = substitute_text(step.text, recipe, ov, sid)
@@ -758,7 +795,7 @@ def advance_step(ctx: ToolContext, step_id: Any = None, recipe_id: Any = None) -
     if ov.step_notes.get(sid):
         bits.append("note: " + ov.step_notes[sid])
     if behind:
-        bits.append(f"{len(behind)} earlier step(s) recorded as done")
+        bits.append("previous step recorded as done")
     if finished:
         bits.append("task(s) done: " + ", ".join(finished))
     return "state", "; ".join(bits)

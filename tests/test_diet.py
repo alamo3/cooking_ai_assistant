@@ -95,11 +95,12 @@ def test_diet_reaches_the_model_prompt(session, store):
 
     store.set_diet("vegan")
     msgs = assemble_context(session, "what should I cook", session.started_at, store=store)
-    system = msgs[0]["content"]
-    assert "DIET: vegan" in system and "without exception" in system
+    whole = chr(10).join(m["content"] for m in msgs)
+    assert "DIET: vegan" in whole and "without exception" in whole
     # and it is absent when unrestricted, so we do not waste context
     store.set_diet("none")
-    assert "DIET:" not in assemble_context(session, "hi", session.started_at, store=store)[0]["content"]
+    plain = assemble_context(session, "hi", session.started_at, store=store)
+    assert "DIET:" not in chr(10).join(m["content"] for m in plain)
 
 
 # ------------------------------------------- what an ingredient is, not how it is spelled

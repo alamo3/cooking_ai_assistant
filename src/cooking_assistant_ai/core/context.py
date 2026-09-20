@@ -6,7 +6,7 @@ prompt, recipes), volatile content last (timeline, timers, transcript).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from cooking_assistant_ai.core.appliances import describe_kitchen, render_board
 from cooking_assistant_ai.core.diet import describe
@@ -93,22 +93,50 @@ def _state_blocks(session: Session, now: datetime, store=None) -> str:
 
 
 def assemble_context(session: Session, prompt: str, now: datetime,
-                     recent_turns: int = 5, max_chars: int = 24000, store=None) -> List[Dict[str, Any]]:
-    """Return the message list for one LLM call. The current prompt is the last message."""
-    system = (SYSTEM_PROMPT + "\n\n===== STATE (authoritative, regenerated every turn) =====\n\n"
-              + _state_blocks(session, now, store))
-    messages: List[Dict[str, Any]] = [{"role": "system", "content": system}]
+                     recent_turns: Optional[int] = None, max_chars: int = 160000,
+                     store=None) -> List[Dict[str, Any]]:
+    """Return the message list for one LLM call. The current prompt is the last message.
 
-    recent = [t for t in session.transcript if t.role in ("user", "assistant")][-recent_turns * 2:]
-    # Trim the oldest turns first if we blow the budget; the progress block already covers them.
-    budget = max_chars - len(system) - len(prompt)
+    Order matters as much as content. The stable system prompt comes first, then the whole
+    conversation so far, then the state block, then what the cook just said.
+
+    **The model gets the entire conversation.** It used to get the last five exchanges, which
+    over a hundred-minute cook is a four-minute window: by the end it could not remember being
+    told to drop a dish, or that it had already asked for the onions to be sliced. Most of
+    what looked like bad judgement was amnesia, and the reflex to answer amnesia with another
+    hard rule is how this thing turns into a state machine with a voice. A real cook's whole
+    conversation measured 6,200 tokens - less than five turns of the state block it was being
+    given instead.
+
+    **The state block goes last, not in the system message.** It is regenerated every turn, so
+    while it sat in the prefix it invalidated the prompt cache on every single call. Behind it
+    now is a prefix that only ever grows - system prompt, then history - which is exactly the
+    shape a cache wants. Moving it also puts the current truth nearest the question, which is
+    where models attend best.
+
+    max_chars is a backstop against a session left running for days, not a working limit; the
+    oldest turns go first and PROGRESS still summarises them.
+    """
+    messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    turns = [t for t in session.transcript if t.role in ("user", "assistant")]
+    if recent_turns is not None:
+        turns = turns[-recent_turns * 2:]
+    state = _state_blocks(session, now, store)
+
+    budget = max_chars - len(SYSTEM_PROMPT) - len(state) - len(prompt)
     kept: List[Dict[str, str]] = []
-    for t in reversed(recent):
+    for t in reversed(turns):
         if budget - len(t.text) < 0:
             break
         budget -= len(t.text)
         kept.append({"role": t.role, "content": t.text})
     kept.reverse()
     messages.extend(kept)
+
+    messages.append({"role": "user", "content":
+                     "[SYSTEM] State as of right now, regenerated every turn. This is the "
+                     "only truth about timers, tasks and progress; where it disagrees with "
+                     "anything said earlier in this conversation, it wins.\n\n" + state})
     messages.append({"role": "user", "content": prompt})
     return messages

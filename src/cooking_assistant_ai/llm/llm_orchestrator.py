@@ -14,7 +14,6 @@ from cooking_assistant_ai.core.claims import (
     Claim,
     correction_prompt,
     missed_state_change,
-    step_moved_on,
     omission_prompt,
     unjustified_claims,
 )
@@ -514,19 +513,22 @@ class Orchestrator:
                 await gate.release()
                 continue
 
-            # The kitchen moved on and nothing was recorded: nudge once, so the plan cannot
-            # silently drift from reality. The model decides what to do about it.
-            # Held claims come first: not lying to the cook outranks recording a step, and
-            # nudging here would consume the round the correction needs.
+            # The cook said the kitchen moved on and nothing was recorded: nudge once, so the
+            # plan cannot silently drift from reality. The model decides what to do about it.
+            #
+            # This fires on what the COOK said, never on what the model replied. A reply-side
+            # version, matching the model's wording against the recipe's step text, was tried
+            # and removed: with four recipes loaded, shared cooking vocabulary matched any of
+            # them, so it fired 33 times in one cook - once on a reply about missing pantry
+            # items, once on the literal reply "NOTHING". Worse than the noise, every nudge
+            # costs a round, and the reply that round replaces has already been spoken, so the
+            # cook hears the answer twice. Twenty of twenty-three repeated replies in that cook
+            # followed an extra round. advance_step is the mechanism now; guessing from text
+            # was never going to be one.
             if omissions_left > 0 and _round < self.max_tool_rounds and not gate.held:
                 missed = None
                 if not proactive and not gate.dispatched:
                     missed = missed_state_change(prompt, gate.tools_ok)
-                # The model walking the cook forward under its own steam. The giveaway is its
-                # own reply rather than anything the cook said, so this applies to a proactive
-                # turn too, and to one that called other tools but never recorded the step.
-                if missed is None and not (gate.tools_ok & {"advance_step", "mark_complete", "skip_step"}):
-                    missed = step_moved_on(text, self.session)
                 if missed is not None:
                     omissions_left -= 1
                     await self._notice("state may have drifted: " + missed.describe(), "warning")

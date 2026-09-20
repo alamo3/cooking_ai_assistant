@@ -188,64 +188,6 @@ def missed_state_change(utterance: str, tools_ok: Iterable[str]) -> Optional[Omi
     return omission
 
 
-# ------------------------------------------------------- walking the cook on without saying so
-#
-# The other way the plan drifts, and the one that actually happened. Over a whole recorded
-# cook of the tofu scramble the model narrated all three steps correctly and in order, and
-# called mark_complete not once, so the tablet sat on step 1 from the first word to the last.
-# Nothing was wrong with what it said; it simply never wrote down that the kitchen had moved.
-#
-# The cook-side rules above cannot catch this, because the cook never says anything that
-# implies it - the model is the one doing the advancing. What gives it away is the reply
-# itself: if it is walking the cook through a step further down the list, the steps before it
-# are done. Matching is against the recipe's own step text rather than another verb list. No
-# regex can know which step "add the nutritional yeast, kala namak, turmeric and garlic
-# powder" belongs to, but the step sharing the most words with it can.
-
-# Three shared content words, stopwords already removed. Measured on the recorded cook: the
-# replies that really did advance shared 4 to 7 with their step and at most 1 with the step
-# before it, so there is a wide gap to sit in.
-_MIN_SHARED_WORDS = 3
-
-
-def step_moved_on(utterance: str, session: Optional[Session]) -> Optional[Omission]:
-    """The model's own reply is walking the cook through a step that is not the current one.
-
-    Conservative on purpose. It requires a clear winner: the matched step must share more
-    words with the reply than the earliest step still open, so anything ambiguous is read as
-    "still on the current step" and says nothing.
-    """
-    if session is None or not utterance.strip():
-        return None
-    said = _words(utterance)
-    if not said:
-        return None
-
-    best: Optional[Tuple[int, str, int, str]] = None  # score, title, number, step id
-    for recipe in session.recipes.values():
-        overlay = session.overlays.get(recipe.id)
-        skipped = overlay.skipped_steps if overlay else set()
-        pending = [(n, s) for n, s in enumerate(recipe.steps, start=1)
-                   if s.id not in session.completed_steps and s.id not in skipped]
-        if len(pending) < 2:
-            continue  # nothing to be behind on
-        scored = [(len(_words(s.text) & said), n, s) for n, s in pending]
-        top = max(scored, key=lambda row: row[0])
-        current = scored[0]
-        if top[0] < _MIN_SHARED_WORDS or top[1] == current[1] or top[0] <= current[0]:
-            continue
-        if best is None or top[0] > best[0]:
-            best = (top[0], recipe.title, current[1], current[2].id)
-
-    if best is None:
-        return None
-    _score, title, open_n, _open_id = best
-    return Omission(
-        "advanced", utterance, frozenset({"advance_step", "mark_complete", "skip_step"}),
-        detail=(f"the reply walks the cook through a later step of {title} while step "
-                f"{open_n} is still open"))
-
-
 def omission_prompt(omission: Omission) -> str:
     if omission.detail:
         return (
