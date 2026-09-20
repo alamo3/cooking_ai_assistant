@@ -723,3 +723,92 @@ def step_ingredients(recipe: Recipe, overlay: Optional[Overlay], step: Step) -> 
             "qty": fmt_ingredient("", amount, ing.unit).strip(),
         })
     return out
+
+
+def in_flight(session: Session) -> List[Recipe]:
+    """Dishes the cook has started and not finished.
+
+    The thing being counted is how many dishes are on the cook's hands at once. A dish that is
+    simmering unattended still counts: they are still holding it in their head, which is the
+    part that goes wrong. Ordered by how far along they are, so the most nearly finished
+    reads first.
+    """
+    out = []
+    for r in session.recipes.values():
+        ov = session.overlays.get(r.id) or Overlay(recipe_id=r.id)
+        done = sum(1 for s in r.steps if s.id in session.completed_steps)
+        open_left = any(s.id not in session.completed_steps and s.id not in ov.skipped_steps
+                        for s in r.steps)
+        if done and open_left:
+            out.append((done / max(len(r.steps), 1), r))
+    return [r for _share, r in sorted(out, key=lambda row: -row[0])]
+
+
+def not_started(session: Session) -> List[Recipe]:
+    """Loaded dishes nobody has touched, in the order they were added."""
+    return [r for r in session.recipes.values()
+            if not any(s.id in session.completed_steps for s in r.steps)]
+
+
+def prep_ahead(session: Session, count: int = 2) -> List[Dict[str, Any]]:
+    """Everything the next `count` unstarted dishes need got ready, by ingredient.
+
+    For the moment the cook has both hands free and something else is simmering. Shared
+    ingredients collapse into one line with the total, because chopping onions twice because
+    they belong to two recipes is the thing worth avoiding.
+
+    It lists ingredients rather than prep steps, and that is deliberate. A cook hit the noodle
+    dish with unboiled noodles and unsliced green onions, and neither had a prep step to find:
+    the recipe says "6 green onions, sliced" in the ingredient list and never mentions slicing
+    again. Whether "sliced" is work to do now is a judgement, so this hands over the names as
+    written - qualifiers and all - with the amounts and which dish wants them, and the model
+    reads them. Explicit prep steps are marked, so it can say which ones the recipe spells out.
+    """
+    targets = not_started(session)[:max(0, count)]
+    by_key: Dict[str, Dict[str, Any]] = {}
+    for r in targets:
+        ov = session.overlays.get(r.id) or Overlay(recipe_id=r.id)
+        prep_steps = {s.id: s for s in r.steps
+                      if looks_like_prep(s) and s.id not in session.completed_steps
+                      and s.id not in ov.skipped_steps}
+        for ing in r.ingredients:
+            key = key_for(ing) or ing.name.lower()
+            if key in _STAPLES:
+                continue
+            slot = by_key.setdefault(key, {
+                "key": key, "label": ing.name.split(",")[0].strip().capitalize(),
+                "unit": ing.unit, "amount": 0.0, "as_written": [], "steps": [], "recipes": [],
+            })
+            slot["amount"] += ing.amount * ov.scale_factor
+            if (slot["unit"] or "").lower() != (ing.unit or "").lower():
+                slot["unit"] = None          # mixed units cannot be added up honestly
+            if ing.name not in slot["as_written"]:
+                slot["as_written"].append(ing.name)
+            for sid, step in prep_steps.items():
+                if ing.id in step.ingredient_ids and sid not in slot["steps"]:
+                    slot["steps"].append(sid)
+            if r.title not in slot["recipes"]:
+                slot["recipes"].append(r.title)
+    out = []
+    for slot in by_key.values():
+        slot["total"] = (fmt_ingredient("", slot["amount"], slot["unit"]).strip()
+                         if slot["unit"] else "")
+        out.append(slot)
+    return sorted(out, key=lambda s: (-len(s["recipes"]), s["label"]))
+
+
+def render_prep_ahead(session: Session, count: int = 2) -> str:
+    rows = prep_ahead(session, count)
+    targets = not_started(session)[:max(0, count)]
+    if not targets:
+        return "Every loaded dish has been started; there is nothing waiting to be prepped."
+    lines = ["PREP AHEAD for " + ", ".join(r.title for r in targets),
+             "Ingredient names are as the recipe writes them. Decide which need doing now and "
+             "say so; mark what the cook finishes."]
+    for slot in rows:
+        who = " + ".join(slot["recipes"])
+        total = f" {slot['total']}" if slot["total"] else ""
+        written = "; ".join(slot["as_written"])
+        spelled = f"  [prep steps: {', '.join(slot['steps'])}]" if slot["steps"] else ""
+        lines.append(f"  {written}{total}  ({who}){spelled}")
+    return "\n".join(lines)

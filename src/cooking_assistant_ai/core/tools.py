@@ -30,6 +30,11 @@ from cooking_assistant_ai.model.types import Recipe, Session, Step, Substitution
 from cooking_assistant_ai.storage.db import Store
 
 
+# How many dishes the cook is walked through at once. Four was measured and it is
+# too many; this is about the cook's attention, not the hob's capacity.
+MAX_DISHES_AT_ONCE = 2
+
+
 class ToolError(Exception):
     def __init__(self, reason: str):
         super().__init__(reason)
@@ -704,12 +709,15 @@ def _settle_tasks(ctx: ToolContext) -> List[str]:
     "the step with their swaps applied and the amounts it needs, so read it back from here "
     "rather than from memory.",
     _params({"step_id": {"type": "string", "description": "step id, or its number in the recipe"},
-             "recipe_id": {"type": "string", "description": "needed only if step_id is a bare number"}},
+             "recipe_id": {"type": "string", "description": "needed only if step_id is a bare number"},
+             "anyway": {"type": "boolean", "description": "only when the cook has asked to start a third dish"}},
             ["step_id"]),
     mid_cook=True,
 )
-def advance_step(ctx: ToolContext, step_id: Any = None, recipe_id: Any = None) -> Tuple[str, Optional[str]]:
-    from cooking_assistant_ai.core.plan import mentions_ingredient, substitute_text
+def advance_step(ctx: ToolContext, step_id: Any = None, recipe_id: Any = None,
+                 anyway: Any = None) -> Tuple[str, Optional[str]]:
+    from cooking_assistant_ai.core.plan import (
+        in_flight, step_ingredients, substitute_text)
 
     s = ctx.session
     recipe = _recipe(ctx, _str(recipe_id, "recipe_id")) if recipe_id else None
@@ -742,6 +750,21 @@ def advance_step(ctx: ToolContext, step_id: Any = None, recipe_id: Any = None) -
                         f"is doing it again, say so and use mark_complete on the steps that "
                         f"really are finished instead")
 
+    # Two dishes on the cook's hands, no more. Asked to plan everything up front, the model
+    # put four dishes in the air at once and kept walking the cook between them; they ended
+    # up shouting one of them down. Starting a third is refused unless the cook asked for it,
+    # and the refusal says how. A simmering dish still counts: it is still being held in mind,
+    # which is the part that goes wrong.
+    fresh = not any(st.id in s.completed_steps for st in recipe.steps)
+    if fresh and not _bool(anyway, "anyway"):
+        busy = [r for r in in_flight(s) if r.id != recipe.id]
+        if len(busy) >= MAX_DISHES_AT_ONCE:
+            names = " and ".join(r.title for r in busy[:MAX_DISHES_AT_ONCE])
+            raise ToolError(
+                f"the cook already has {names} on the go; starting {recipe.title} as well "
+                f"makes three at once. Finish or park one first. If they asked for a third, "
+                f"call this again with anyway=true")
+
     # Only one step forward, ever. This used to sweep every earlier step into completed_steps
     # so a forgetful model could catch up, and the cost of that convenience was a whole
     # recipe recorded as cooked that nobody had touched. A step is done because the cook did
@@ -763,10 +786,7 @@ def advance_step(ctx: ToolContext, step_id: Any = None, recipe_id: Any = None) -
     finished = _settle_tasks(ctx)
 
     text = substitute_text(step.text, recipe, ov, sid)
-    scale = ov.scale_factor
-    # Substitutions are written into the recipe itself, so ing.name is already the swap.
-    needs = [fmt_ingredient(ing.name, ing.amount * scale, ing.unit)
-             for ing in recipe.ingredients if mentions_ingredient(text, ing.name)]
+    needs = [n["text"] for n in step_ingredients(recipe, ov, step)]
 
     bits = [f"{recipe.title} step {n} of {len(recipe.steps)}: {text}"]
     if needs:
@@ -780,6 +800,23 @@ def advance_step(ctx: ToolContext, step_id: Any = None, recipe_id: Any = None) -
     if finished:
         bits.append("task(s) done: " + ", ".join(finished))
     return "state", "; ".join(bits)
+
+
+@tool(
+    "prep_ahead",
+    "The cook has a free moment and wants to get ahead. Lists what the next dishes need got "
+    "ready, by ingredient, with the totals across them, so shared work is done once. Names "
+    "are as the recipe writes them ('6 green onions, sliced'): decide which are worth doing "
+    "now, tell the cook, and mark what they finish.",
+    _params({"recipes": {"type": "integer",
+                         "description": "how many not-yet-started dishes to look at, default 2"}}),
+    mid_cook=True,
+)
+def prep_ahead(ctx: ToolContext, recipes: Any = None, count: Any = None) -> Tuple[str, Optional[str]]:
+    from cooking_assistant_ai.core.plan import render_prep_ahead
+
+    n = _int(recipes if recipes is not None else count, "recipes", minimum=1) or 2
+    return "state", render_prep_ahead(ctx.session, n)
 
 
 @tool(

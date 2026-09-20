@@ -282,6 +282,13 @@ async def classify_steps(args: argparse.Namespace) -> None:
                      if str(c).strip().lower() in CATEGORIES})
         return out
 
+    # Keys are only worth anything if they agree across recipes: mass prep, the pantry and
+    # the shopping list all group by them. Judged one recipe at a time with no sight of the
+    # others, the model produced "green onion" for one dish and "green onions" for the next,
+    # which silently split every group in two. It gets the vocabulary already in use, and is
+    # asked to reuse a key rather than coin a synonym.
+    vocabulary = sorted({i.key for r in store.list_recipes() for i in r.ingredients if i.key})
+
     for recipe in store.list_recipes():
         judged = (all(s.prep is not None for s in recipe.steps)
                   and all(i.key for i in recipe.ingredients))
@@ -299,7 +306,11 @@ async def classify_steps(args: argparse.Namespace) -> None:
                 "brand. 'Medium Onion (White, Yellow or Brown, Chopped)' and 'onions' are "
                 "both 'onion'; '1 19oz can black beans' is 'black beans'. Same item, same "
                 "key; different items, different keys - ground coriander seed is not fresh "
-                "coriander leaf.\n\n"
+                "coriander leaf.\n"
+                + (f"Keys already used in this library, reuse one exactly when it is the "
+                   f"same item rather than coining a variant: {', '.join(vocabulary)}.\n"
+                   if vocabulary else "")
+                + "\n"
                 f"{item_lines}\n\n"
                 "STEPS - repeat each step's number, then:\n"
                 "prep: is it preparation done before anything is on the heat (chopping, "
@@ -391,6 +402,7 @@ async def classify_steps(args: argparse.Namespace) -> None:
             new_items.append(_replace(item, key=key, contains=contains, may_contain=maybe))
 
         store.put_recipe(_replace(recipe, steps=new_steps, ingredients=tuple(new_items)))
+        vocabulary = sorted(set(vocabulary) | {i.key for i in new_items if i.key})
         marks = "".join("P" if s.prep else "." for s in new_steps)
         linked = sum(1 for s in new_steps if s.ingredient_ids)
         found = sorted({c for i in new_items for c in (i.contains or ())})

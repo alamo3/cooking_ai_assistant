@@ -133,3 +133,53 @@ def test_finishing_a_tasks_last_step_completes_it(ctx, prepped):
     assert call(ctx, step_id="4", recipe_id="r001").ok
     assert ctx.session.tasks[task.id].status == "complete"
     assert not [t for t in ctx.session.timers.values() if t.status == "running"]
+
+
+# --------------------------------------------------------------- two dishes at a time
+
+def start(ctx, rid, upto):
+    """Put a recipe in flight by recording its first `upto` steps."""
+    r = ctx.session.recipes[rid]
+    dispatch(ctx, "mark_complete", {"step_ids": [s.id for s in r.steps[:upto]]})
+
+
+def test_a_third_dish_is_refused(ctx):
+    """Four dishes in the air at once is what the cook shouted down."""
+    start(ctx, "r001", 1)
+    start(ctx, "r002", 1)
+    out = call(ctx, step_id=1, recipe_id="r003")
+    assert not out.ok
+    assert "three at once" in out.reason and "anyway=true" in out.reason
+    assert not any(s.id in ctx.session.completed_steps for s in ctx.session.recipes["r003"].steps)
+
+
+def test_the_refusal_names_what_is_already_going(ctx):
+    start(ctx, "r001", 1)
+    start(ctx, "r002", 1)
+    out = call(ctx, step_id=1, recipe_id="r003")
+    assert "Roast Chicken Thighs" in out.reason and "Jasmine Rice" in out.reason
+
+
+def test_the_cook_can_insist(ctx):
+    start(ctx, "r001", 1)
+    start(ctx, "r002", 1)
+    assert call(ctx, step_id=1, recipe_id="r003", anyway=True).ok
+
+
+def test_two_at_once_is_fine(ctx):
+    start(ctx, "r001", 1)
+    assert call(ctx, step_id=1, recipe_id="r002").ok
+
+
+def test_carrying_on_with_a_dish_already_going_is_never_capped(ctx):
+    start(ctx, "r001", 1)
+    start(ctx, "r002", 1)
+    start(ctx, "r003", 1)          # three in flight, however they got there
+    assert call(ctx, step_id=2, recipe_id="r001").ok
+
+
+def test_a_finished_dish_frees_a_slot(ctx):
+    start(ctx, "r001", 1)
+    r2 = ctx.session.recipes["r002"]
+    dispatch(ctx, "mark_complete", {"step_ids": [s.id for s in r2.steps]})
+    assert call(ctx, step_id=1, recipe_id="r003").ok
