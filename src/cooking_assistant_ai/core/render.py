@@ -351,6 +351,9 @@ def recipe_view(session: Session, r: Recipe) -> Dict[str, Any]:
         "servings": int(servings) if servings == int(servings) else round(servings, 1),
         "ingredients": ingredients, "steps": steps, "current_step": current,
         "completed_steps": [s.id for s in r.steps if s.id in session.completed_steps],
+        # Where this dish sits in the model's attention: 0 is the one it last moved
+        # the cook to. -1 when it has not sent them here at all yet.
+        "focus": session.focus.index(r.id) if r.id in session.focus else -1,
         "skipped_steps": sorted(ov.skipped_steps),
         "changes": render_changes(r, ov),
         "rendered": render_recipe(r, ov, session.completed_steps),

@@ -126,6 +126,7 @@ def to_dict(session: Session) -> Dict[str, Any]:
         "timers": [_timer_dict(t) for t in session.timers.values()],
         "completed_steps": sorted(session.completed_steps),
         "notes": list(session.notes),
+        "focus": list(session.focus),
         "target_plating": _dt(session.target_plating),
         # The transcript is for continuity of conversation, not state; the tail is plenty and
         # keeps the snapshot small enough to write every few seconds.
@@ -169,6 +170,7 @@ def from_dict(d: Dict[str, Any]) -> Session:
         session.timers[t.id] = t
     session.completed_steps = set(d.get("completed_steps") or ())
     session.notes = list(d.get("notes") or ())
+    session.focus = [r for r in (d.get("focus") or ()) if r in session.recipes]
     session.target_plating = _parse_dt(d.get("target_plating"))
     session.transcript = [Turn(role=t["role"], text=t["text"], at=_parse_dt(t["at"]))
                           for t in d.get("transcript", [])]

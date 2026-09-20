@@ -784,6 +784,9 @@ def advance_step(ctx: ToolContext, step_id: Any = None, recipe_id: Any = None,
         behind = [st.id for st in blocking]
         s.completed_steps.update(behind)
     finished = _settle_tasks(ctx)
+    # Remember that this is the dish the cook was last sent to, so the tablet leads
+    # with it rather than guessing from how many steps each one has ticked off.
+    s.focus = [recipe.id] + [r for r in s.focus if r != recipe.id]
 
     text = substitute_text(step.text, recipe, ov, sid)
     needs = [n["text"] for n in step_ingredients(recipe, ov, step)]

@@ -254,6 +254,10 @@ class Session:
     proactivity: float = 0.5
     last_turn_at: Optional[datetime] = None
     open_failures: List[Failure] = field(default_factory=list)
+    # Recipe ids in the order the model last moved the cook to them, most recent
+    # first. The tablet shows the dishes in this order, so what is on screen is what
+    # the model decided rather than what the browser inferred.
+    focus: List[str] = field(default_factory=list)
     _counters: Dict[str, Iterator[int]] = field(default_factory=dict, repr=False)
 
     # -- ids ----------------------------------------------------------------

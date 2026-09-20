@@ -365,12 +365,18 @@
     scrollConversation();
     return b;
   }
+  // A tool call that worked does not belong in the conversation. Its effect is already on
+  // screen - the plan, the timers, the step - and a run of them pushed the sentence the
+  // assistant was actually saying up out of view. Rejections stay: they are rare, they are
+  // the exception the cook may need to act on, and the UNRESOLVED panel only carries the
+  // ones that are still outstanding.
   function addChip(msg) {
+    if (msg.ok) return;
     const args = msg.args && Object.keys(msg.args).length
       ? " " + Object.entries(msg.args).map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`).join(", ")
       : "";
-    const text = (msg.ok ? "✓ " : "✗ ") + msg.name + args + (msg.ok ? "" : " — " + (msg.message || "rejected"));
-    const chip = el("div", "chip" + (msg.ok ? "" : " rejected") + (msg.source === "ui" ? " ui" : ""), text);
+    const text = "✗ " + msg.name + args + " — " + (msg.message || "rejected");
+    const chip = el("div", "chip rejected" + (msg.source === "ui" ? " ui" : ""), text);
     $("#conversation").appendChild(chip);
     scrollConversation();
   }
@@ -522,19 +528,28 @@
     return "\u{1F372}";
   }
 
+  // Which dishes to show, and in which order: the ones the model has moved the cook to,
+  // most recent first. This used to pick the single dish furthest along, which is a rule
+  // invented in the browser - with two dishes interleaved it showed whichever happened to
+  // have more steps ticked off, so the cook watched one recipe run to the end while the
+  // model was walking them between both. advance_step decides; this follows.
+  function dishesOnTheGo(recipes) {
+    const withStep = (recipes || [])
+      .map((r) => ({ r, cur: (r.steps || []).find((st) => st.n === r.current_step) }))
+      .filter((d) => d.cur);
+    const led = withStep.filter((d) => d.r.focus >= 0)
+      .sort((a, b) => a.r.focus - b.r.focus);
+    if (led.length) return led.slice(0, 2);
+    // Nothing advanced yet: fall back to whatever has work, so the first step is visible
+    // before the model has moved anyone anywhere.
+    return withStep.slice(0, 1);
+  }
+
   function renderStepPanel(recipes) {
     const box = $("#step-now");
-    // The dish the cook is actually on: the one furthest along that still has work left.
-    // With several going at once, the model moves this with advance_step.
-    let best = null;
-    for (const r of recipes || []) {
-      const cur = (r.steps || []).find((st) => st.n === r.current_step);
-      if (!cur) continue;
-      const done = (r.completed_steps || []).length;
-      if (!best || done > best.done) best = { r, cur, done };
-    }
-    if (!best) { box.hidden = true; return; }
-    const { r, cur } = best;
+    const going = dishesOnTheGo(recipes);
+    if (!going.length) { box.hidden = true; return; }
+    const { r, cur } = going[0];
 
     $("#step-dish").textContent = r.title;
     $("#step-count").textContent = `Step ${cur.n} of ${r.steps.length}`;
@@ -562,6 +577,32 @@
 
     const next = r.steps.find((st) => st.n > cur.n && st.status === "pending");
     $("#step-next").textContent = next ? `Then: ${next.text}` : "";
+
+    // The other dish on the go, small but present, so interleaving is visible rather than
+    // something the cook has to remember.
+    const also = $("#step-also");
+    also.innerHTML = "";
+    for (const d of going.slice(1)) {
+      const card = el("div", "also");
+      const head = el("div", "also-head");
+      head.appendChild(el("span", "also-dish", d.r.title));
+      head.appendChild(el("span", "also-count", `Step ${d.cur.n} of ${d.r.steps.length}`));
+      card.appendChild(head);
+      card.appendChild(el("div", "also-text", d.cur.text));
+      const tiles = el("div", "also-needs");
+      for (const need of d.cur.needs || []) {
+        const tile = el("span", "also-need");
+        tile.appendChild(el("span", "also-icon", foodIcon(need)));
+        tile.appendChild(el("span", "also-qty", `${need.qty || ""} ${need.name}`.trim()));
+        tiles.appendChild(tile);
+      }
+      if ((d.cur.needs || []).length) card.appendChild(tiles);
+      const done = el("button", "small", `Done with step ${d.cur.n}`);
+      done.onclick = () => uiTool("POST", `/session/${app.sessionId}/steps/${d.cur.id}/complete`);
+      card.appendChild(done);
+      also.appendChild(card);
+    }
+    also.hidden = going.length < 2;
     box.hidden = false;
   }
 

@@ -30,6 +30,9 @@ speech = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    # A JS engine, so the tablet's own code can be executed in tests. There is no browser
+    # here and a syntax error in app.js once took the whole screen down unnoticed.
+    "dukpy>=0.3",
 ]
 
 [project.scripts]
