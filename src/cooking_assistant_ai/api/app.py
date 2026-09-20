@@ -9,7 +9,7 @@ import os
 import re
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
@@ -50,26 +50,33 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class Settings:
+    """Configuration, read from the environment when an instance is built.
+
+    default_factory rather than a plain default on purpose: a bare `os.environ.get(...)`
+    as a dataclass default is evaluated once, at import. Setting COOK_DB afterwards did
+    nothing, which is how a test aimed at a temporary database wrote into the real one.
+    """
+
     model: str = DEFAULT_MODEL
-    db_path: str = os.environ.get("COOK_DB", "cooking.db")
-    no_llm: bool = os.environ.get("COOK_NO_LLM", "") == "1"
-    idle_interval_s: float = float(os.environ.get("COOK_IDLE_INTERVAL", "60"))
-    warm_model: bool = os.environ.get("COOK_WARM", "1") == "1"
-    stt: str = os.environ.get("COOK_STT", "none")
-    tts: str = os.environ.get("COOK_TTS", "none")
-    backend: str = os.environ.get("COOK_LLM", DEFAULT_BACKEND)  # cloud | openrouter | ollama
-    vad: str = os.environ.get("COOK_VAD", "silero")
-    barge_in: str = os.environ.get("COOK_BARGE_IN", "voice")  # voice | transcript | off
+    db_path: str = field(default_factory=lambda: os.environ.get("COOK_DB", "cooking.db"))
+    no_llm: bool = field(default_factory=lambda: os.environ.get("COOK_NO_LLM", "") == "1")
+    idle_interval_s: float = field(default_factory=lambda: float(os.environ.get("COOK_IDLE_INTERVAL", "60")))
+    warm_model: bool = field(default_factory=lambda: os.environ.get("COOK_WARM", "1") == "1")
+    stt: str = field(default_factory=lambda: os.environ.get("COOK_STT", "none"))
+    tts: str = field(default_factory=lambda: os.environ.get("COOK_TTS", "none"))
+    backend: str = field(default_factory=lambda: os.environ.get("COOK_LLM", DEFAULT_BACKEND))  # cloud | openrouter | ollama
+    vad: str = field(default_factory=lambda: os.environ.get("COOK_VAD", "silero"))
+    barge_in: str = field(default_factory=lambda: os.environ.get("COOK_BARGE_IN", "voice"))  # voice | transcript | off
     # Off by default: create_app is used by tests and embedded callers, and starting an
     # mDNS responder for each of those is slow and pointless. `serve` turns it on.
-    mdns: bool = os.environ.get("COOK_MDNS", "0") == "1"
-    port: int = int(os.environ.get("COOK_PORT", "8000"))   # only for what mDNS advertises
-    https: bool = os.environ.get("COOK_HTTPS", "1") != "0"
+    mdns: bool = field(default_factory=lambda: os.environ.get("COOK_MDNS", "0") == "1")
+    port: int = field(default_factory=lambda: int(os.environ.get("COOK_PORT", "8000")))   # only for what mDNS advertises
+    https: bool = field(default_factory=lambda: os.environ.get("COOK_HTTPS", "1") != "0")
     # Session snapshots: how often to write, and how stale a snapshot may be and still be
     # worth resuming. Twelve hours covers "the power went out during dinner"; anything older
     # is last week's cook and only gets in the way.
-    autosave_s: float = float(os.environ.get("COOK_AUTOSAVE", "10"))
-    session_max_age_s: float = float(os.environ.get("COOK_SESSION_MAX_AGE", str(12 * 3600)))
+    autosave_s: float = field(default_factory=lambda: float(os.environ.get("COOK_AUTOSAVE", "10")))
+    session_max_age_s: float = field(default_factory=lambda: float(os.environ.get("COOK_SESSION_MAX_AGE", str(12 * 3600))))
 
 
 # --------------------------------------------------------------------------- live session
@@ -218,6 +225,20 @@ class SessionManager:
         if live is None:
             raise HTTPException(404, "no such session")
         return live
+
+    def most_recent_with_work(self) -> Optional[LiveSession]:
+        """The newest live session that has anything in it, or None.
+
+        Used when the tablet reconnects with an id that no longer exists: its cook is usually
+        still here under another id, restored from disk, and handing back a blank session
+        looks exactly like losing the evening.
+        """
+        candidates = [live for live in self.sessions.values()
+                      if session_snapshots.is_worth_saving(live.session)]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda live: (live.session.last_turn_at
+                                                 or live.session.started_at))
 
     def restore(self, session: Session) -> LiveSession:
         """Bring a snapshot back to life. The orchestrator picks the timers up from there."""
@@ -869,6 +890,13 @@ def create_app(settings: Optional[Settings] = None, llm: Optional[LLM] = None,
         await ws.accept()
         try:
             live = manager.sessions.get(session_id) if session_id else None
+            replaced = None
+            if live is None and session_id:
+                # The id the tablet remembered is gone. Its cook may still be here under
+                # another id, restored from disk at startup, so take the most recent one
+                # that has anything in it rather than opening an empty kitchen.
+                live = manager.most_recent_with_work()
+                replaced = "resumed" if live is not None else "gone"
             if live is None:
                 live = manager.create()
         except HTTPException as e:
@@ -877,6 +905,14 @@ def create_app(settings: Optional[Settings] = None, llm: Optional[LLM] = None,
             return
         live.sockets.add(ws)
         await ws.send_json({"type": "session", "session_id": live.session.id})
+        if replaced == "resumed":
+            await ws.send_json({"type": "notice", "level": "warning", "text":
+                                "That session had expired; picked up the most recent one "
+                                "instead. Its recipes and plan are as you left them."})
+        elif replaced == "gone":
+            await ws.send_json({"type": "notice", "level": "warning", "text":
+                                "The previous session had expired, so this is a fresh one. "
+                                "Your recipe library is untouched - pick dishes to start."})
         await ws.send_json({"type": "state", **live.orchestrator.state()})
         orch = live.orchestrator
         try:
